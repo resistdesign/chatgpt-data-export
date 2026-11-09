@@ -11,6 +11,26 @@ const ORIGIN = 'https://chatgpt.com';
 const timeout = 120_000;
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
+/** Injectable clock makes concurrency and multi-minute cooldowns testable instantly. */
+export interface RequestTiming {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  random(): number;
+}
+const realTiming: RequestTiming = { now: () => Date.now(), sleep, random: () => Math.random() };
+const MAX_RETRY_AFTER = 60 * 60_000;
+const MAX_RATE_LIMIT_PAUSE = 5 * 60_000;
+
+export function retryAfterMs(value: string | null, now: number): number {
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(MAX_RETRY_AFTER, Math.ceil(seconds * 1000));
+  }
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.min(MAX_RETRY_AFTER, Math.max(0, date - now)) : 0;
+}
+
 export function validateApiPath(path: string): string {
   if (!(path.startsWith('/backend-api/') || path.startsWith('/public-api/')) || path.includes('..') || path.includes('\\') || path.includes('#')) {
     throw new Error('Invalid ChatGPT API path');
@@ -30,10 +50,17 @@ export class ElectronSessionClient implements ChatGptApi {
   private cooldownUntil = 0;
   private gap: number;
   private readonly initialGap: number;
+  private consecutive429s = 0;
+  private successesSince429 = 0;
   private halted = false;
   private pacing = Promise.resolve();
 
-  constructor(private readonly session: AuthenticatedSession, delayMs = 750, private readonly progress?: Progress) {
+  constructor(
+    private readonly session: AuthenticatedSession,
+    delayMs = 750,
+    private readonly progress?: Progress,
+    private readonly timing: RequestTiming = realTiming,
+  ) {
     this.gap = delayMs;
     this.initialGap = delayMs;
   }
@@ -65,23 +92,55 @@ export class ElectronSessionClient implements ChatGptApi {
 
   cancel(): void { this.halted = true; }
 
-  /** Serialized admission to the network; admitted requests can execute concurrently. */
+  /**
+   * Admission is serialized, but the deadline must be read again after EVERY
+   * sleep: another in-flight worker may have just received HTTP 429.
+   */
   private async pace(): Promise<void> {
     const previous = this.pacing;
     let release!: () => void;
     this.pacing = new Promise<void>(resolve => { release = resolve; });
     await previous;
     try {
-      if (this.halted) throw new ExportCancelledError();
-      const due = Math.max(Date.now(), this.nextAt, this.cooldownUntil);
-      this.nextAt = due + this.gap;
-      while (Date.now() < due) {
+      while (true) {
         if (this.halted) throw new ExportCancelledError();
-        const seconds = Math.ceil((due - Date.now()) / 1000);
-        this.progress?.waiting(`cooldown: next request in ${seconds}s`);
-        await sleep(Math.min(750, due - Date.now()));
+        const now = this.timing.now();
+        const due = Math.max(this.nextAt, this.cooldownUntil);
+        if (now >= due) {
+          // Reserve spacing only when the request is actually admitted.
+          this.nextAt = now + this.gap;
+          break;
+        }
+        const seconds = Math.ceil((due - now) / 1000);
+        const limited = this.cooldownUntil > now;
+        this.progress?.waiting(limited
+          ? `Rate-limit pause: next request in ${seconds}s`
+          : `Request spacing: next request in ${seconds}s`);
+        await this.timing.sleep(Math.min(750, due - now));
       }
     } finally { release(); }
+  }
+
+  private recoveredSuccess(): void {
+    this.successesSince429++;
+    // One successful request does not erase an ongoing multi-worker 429 storm.
+    // Recover gradually after several successful requests.
+    if (this.successesSince429 >= 5) {
+      this.consecutive429s = Math.max(0, this.consecutive429s - 1);
+      this.gap = Math.max(this.initialGap, Math.floor(this.gap * 0.8));
+      this.successesSince429 = 0;
+    }
+  }
+
+  private backoff(status: number, attempt: number, retryAfter: string | null): number {
+    if (status !== 429) return Math.min(30_000, 1000 * (2 ** attempt));
+    this.consecutive429s = Math.min(20, this.consecutive429s + 1);
+    this.successesSince429 = 0;
+    this.gap = Math.min(16_000, Math.max(this.gap * 2, 1_000));
+    const base = Math.min(MAX_RATE_LIMIT_PAUSE, 30_000 * (2 ** Math.min(this.consecutive429s - 1, 5)));
+    const jitter = Math.floor(base * 0.15 * Math.min(1, Math.max(0, this.timing.random())));
+    // The provider's explicit Retry-After is authoritative when longer.
+    return Math.max(base + jitter, retryAfterMs(retryAfter, this.timing.now()));
   }
 
   async get(path: string, workspaceId: string | null = null): Promise<unknown> {
@@ -92,7 +151,7 @@ export class ElectronSessionClient implements ChatGptApi {
       await this.pace();
       const response = await this.request(url, workspaceId, this.token);
       if (response.status === 200) {
-        this.gap = Math.max(this.initialGap, Math.floor(this.gap * 0.95));
+        this.recoveredSuccess();
         return response.body;
       }
       if (response.status === 401) {
@@ -123,14 +182,11 @@ export class ElectronSessionClient implements ChatGptApi {
         if (response.status === 429) throw new RateLimitExhausted(path);
         throw new ApiError(response.status, path, `HTTP ${response.status} after 7 attempts`);
       }
-      const retryHeader = response.retryAfter;
-      const parsed = retryHeader ? Number(retryHeader) : NaN;
-      const retryAt = retryHeader && !Number.isFinite(parsed) ? Date.parse(retryHeader) : NaN;
-      const serverWait = Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : 0;
-      const delay = response.status === 429 ? Math.max(serverWait, Math.min(120_000, 15_000 * (2 ** attempt))) : Math.min(30_000, 1000 * (2 ** attempt));
-      if (response.status === 429) this.gap = Math.min(16_000, Math.max(this.gap * 2, 1000));
-      this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + Math.min(300_000, delay));
-      this.progress?.info(`ChatGPT HTTP ${response.status}; retry ${attempt + 1}/6 after ${Math.ceil(delay / 1000)}s (pacing ${this.gap}ms).`);
+      const delay = this.backoff(response.status, attempt, response.retryAfter);
+      this.cooldownUntil = Math.max(this.cooldownUntil, this.timing.now() + delay);
+      this.progress?.info(response.status === 429
+        ? `ChatGPT HTTP 429: shared pause ${Math.ceil(delay / 1000)}s; rate-limit streak ${this.consecutive429s}; retry ${attempt + 1}/6; request spacing ${this.gap}ms.`
+        : `ChatGPT HTTP ${response.status}; retry ${attempt + 1}/6 after ${Math.ceil(delay / 1000)}s.`);
     }
     throw new Error('Unreachable retry state');
   }
