@@ -69,7 +69,12 @@ export async function buildInventory(api: ChatGptApi, scope: Workspace, progress
         seenPages.add(first);
         items.forEach(consume);
         progress.set(`Inventory ${name}`, conversations.size, undefined, `${page + 1} pages`);
-        if (items.length < 100) { scopes[name] = 'complete'; return; }
+        if ((page + 1) % 10 === 0) progress.info(`${name} inventory: ${page + 1} pages, ${conversations.size} conversations discovered.`);
+        if (items.length < 100) {
+          scopes[name] = 'complete';
+          progress.info(`${name} inventory completed: ${page + 1} pages, ${conversations.size} conversations discovered so far.`);
+          return;
+        }
         offset += items.length - 5; // overlap defends against items moving while paging
       }
       throw new Error(`${name} exceeded pagination safety limit`);
@@ -80,6 +85,7 @@ export async function buildInventory(api: ChatGptApi, scope: Workspace, progress
   };
   await pageList('main', offset => `/backend-api/conversations?${query({ offset: String(offset), limit: '100', order: 'updated' })}`, item => add(item), false);
   await pageList('archived', offset => `/backend-api/conversations?${query({ offset: String(offset), limit: '100', order: 'updated', is_archived: 'true' })}`, item => add(item, { archived: true }), false);
+  progress.set('Inventory projects', 0, 0, 'Loading Project sidebar');
   try {
     let cur: string | null = null;
     const seen = new Set<string>();
@@ -88,13 +94,27 @@ export async function buildInventory(api: ChatGptApi, scope: Workspace, progress
       if (cur) params.cursor = cur;
       const response = record(await api.get(`/backend-api/gizmos/snorlax/sidebar?${query(params)}`, scope.id));
       if (!Array.isArray(response.items)) throw new Error('Projects endpoint returned no items');
-      for (const item of response.items) {
+
+      // Count only new, distinct Projects on this sidebar page, not unrelated GPT entries.
+      const pageIds = new Set<string>();
+      const pageProjects = response.items.filter(item => {
         const outer = record(record(item).gizmo);
         const nested = record(outer.gizmo);
         const g = Object.keys(nested).length ? nested : outer;
         const id = str(g.id);
-        if (!id?.startsWith('g-p-') || projects.some(p => p.id === id)) continue;
-        const project: ProjectListing = { id: safeId(id), raw: item, files: array(outer.files ?? record(item).files) };
+        if (!id?.startsWith('g-p-') || projects.some(p => p.id === id) || pageIds.has(id)) return false;
+        pageIds.add(id);
+        return true;
+      });
+      progress.set('Inventory projects', 0, pageProjects.length,
+        `sidebar page ${i + 1}; ${projects.length} Projects and ${conversations.size} conversations indexed`);
+
+      for (const [projectIndex, item] of pageProjects.entries()) {
+        const outer = record(record(item).gizmo);
+        const nested = record(outer.gizmo);
+        const g = Object.keys(nested).length ? nested : outer;
+        const id = safeId(str(g.id)!);
+        const project: ProjectListing = { id, raw: item, files: array(outer.files ?? record(item).files) };
         try {
           project.details = await api.get(`/backend-api/gizmos/${encodeURIComponent(id)}`, scope.id);
           const details = record(project.details);
@@ -116,10 +136,18 @@ export async function buildInventory(api: ChatGptApi, scope: Workspace, progress
           projectCursor = next;
           if (page === 999) throw new Error('Project conversation pagination limit');
         }
+        progress.set('Inventory projects', projectIndex + 1, pageProjects.length,
+          `sidebar page ${i + 1}; ${projects.length} Projects and ${conversations.size} conversations indexed`);
+        if ((projectIndex + 1) % 5 === 0 || projectIndex + 1 === pageProjects.length) {
+          progress.info(`Project inventory: ${projectIndex + 1}/${pageProjects.length} on sidebar page ${i + 1}; ${projects.length} Projects indexed.`);
+        }
       }
-      progress.set('Inventory projects', conversations.size, undefined, `${projects.length} projects`);
       const next = cursor(response.cursor ?? response.next_cursor);
-      if (!next || !response.items.length) { scopes.projects = 'complete'; break; }
+      if (!next || !response.items.length) {
+        scopes.projects = 'complete';
+        progress.info(`Project inventory completed: ${projects.length} Projects; ${conversations.size} conversations discovered so far.`);
+        break;
+      }
       if (seen.has(next)) throw new Error('Repeated project sidebar cursor');
       seen.add(next); cur = next;
       if (i === 499) throw new Error('Project sidebar pagination limit');
