@@ -1,4 +1,4 @@
-import { ApiError, RateLimitExhausted } from './errors.js';
+import { ApiError, RateLimitExhausted, ResourceDeniedError, SessionExpiredError, SessionCheckError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import type { Progress } from './progress.js';
 
@@ -96,9 +96,22 @@ export class ElectronSessionClient implements ChatGptApi {
         return response.body;
       }
       if (response.status === 401) {
+        // A single private endpoint returning 401 does NOT prove the entire
+        // login has expired. Previous versions retried an unchanged token
+        // seven times and aborted the whole archive over one restricted chat.
+        const previousToken = this.token;
         this.token = await this.sessionToken();
-        if (!this.token) throw new ApiError(401, path, 'ChatGPT session expired. Sign in again in the application.');
-        if (attempt < 6) continue;
+        if (!this.token) throw new SessionExpiredError(path);
+        if (attempt === 0 && this.token !== previousToken) {
+          this.progress?.info('ChatGPT refreshed the session token; retrying once.');
+          continue;
+        }
+        const account = await this.request(
+          validateApiPath('/backend-api/accounts/check/v4-2023-04-27'), null, this.token,
+        );
+        if (account.status === 200) throw new ResourceDeniedError(path);
+        if (account.status === 401 || account.status === 403) throw new SessionExpiredError(path);
+        throw new SessionCheckError(account.status);
       }
       const retryable = [408, 429].includes(response.status) || response.status >= 500;
       if (!retryable) throw new ApiError(response.status, path, `ChatGPT returned HTTP ${response.status}`);
