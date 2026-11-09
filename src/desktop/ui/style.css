@@ -24,3 +24,6 @@ main { max-width:1040px; margin:auto; padding:32px 38px 40px; }
 .saved-archive p { color:var(--muted); margin:6px 0 12px; }
 .saved-archive .button { padding:9px 12px; }
 @media (max-width:720px) { .saved-archive { margin-left:0; } }
+
+.archive-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+#archive-routes { overflow-wrap:anywhere; color:#bdcbe0; }

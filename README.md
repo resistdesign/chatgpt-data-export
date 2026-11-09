@@ -103,3 +103,7 @@ When the app opens, **Existing archive** summarizes the saved conversation check
 Use **Recover next 10 missing files** to try one small batch of previously missing conversation/Project attachments. This pass selects only saved missing-file records and reads raw conversation content from the local archive. It does **not** enumerate conversations, download previously completed conversations, or repeat the whole Project crawl. Each click rotates to the next batch so permanently inaccessible files do not block later ones. The existing file hashes and completion markers are preserved; successful recoveries update their checkpoint and manifest records. Recovery produces `recovery-latest.json` and can be stopped safely.
 
 An unavailable resource is still unavailable if the provider denies every permitted retrieval path. Recovery cannot guarantee 100% coverage of internal ChatGPT data.
+
+### Safe attachment diagnostics
+
+**Copy safe diagnostic summary** copies only aggregate missing-file counts and a histogram of download-method failures (such as HTTP 403 with a workspace header). The diagnostic summary is generated from the existing archive without using the network. It intentionally excludes account identifiers, conversation and file identifiers, filenames, request URLs, access tokens, signed links, and raw server responses. The histogram counts failed **route attempts**, not unique files.

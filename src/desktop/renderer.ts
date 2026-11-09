@@ -16,6 +16,10 @@ interface UiState {
     projectFilesMissing: number; projectsWithMissing: number;
     lastRunAt: string | null; lastRunStatus: string | null; verified: false;
     blockers: Record<string, number>;
+    routeFailures: Array<{
+      kind: 'conversation' | 'project'; route: string;
+      scope: 'workspace header' | 'default scope'; result: string; attempts: number;
+    }>;
   } | null;
   archiveLoading: boolean;
   archiveError: string | null;
@@ -27,6 +31,7 @@ interface AppBridge {
   chooseOutput(): Promise<string>;
   start(limit: 25 | null): Promise<boolean>;
   recover(): Promise<boolean>;
+  copyDiagnostics(): Promise<boolean>;
   verify(): Promise<boolean>;
   stop(): Promise<boolean>;
   openOutput(): Promise<boolean>;
@@ -68,6 +73,13 @@ function render(state: UiState): void {
     ? Object.entries(saved.blockers).filter(([, count]) => count > 0)
       .map(([reason, count]) => `${reason}: ${count}`).join(' · ')
     : '');
+  text('archive-routes', saved && saved.routeFailures.length > 0
+    ? 'Most frequent failed routes (attempts, not files): ' +
+      saved.routeFailures.slice(0, 4)
+        .map(item => `${item.route} [${item.scope}]: ${item.result} ×${item.attempts}`).join(' · ')
+    : 'No per-route diagnostics recorded yet.');
+  (el('copy-diagnostics') as HTMLButtonElement).disabled = state.running ||
+    state.archiveLoading || !saved || saved.missingFiles === 0;
   (el('retry-missing') as HTMLButtonElement).disabled = state.running || !state.signedIn ||
     state.archiveLoading || !saved || saved.missingFiles === 0;
   text('stage', state.status);
@@ -112,6 +124,7 @@ button('choose-output', () => app.chooseOutput());
 button('export-all', () => app.start(null));
 button('test-25', () => app.start(25));
 button('retry-missing', () => app.recover());
+button('copy-diagnostics', () => app.copyDiagnostics());
 button('stop', () => app.stop());
 button('verify', () => app.verify());
 button('open-output', () => app.openOutput());

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from 'electron';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -7,7 +7,7 @@ import { ElectronSessionClient } from '../electron-client.js';
 import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
 import { SessionExpiredError, SessionCheckError, ExportCancelledError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
-import { inspectArchive, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
+import { inspectArchive, archiveDiagnosticText, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PARTITION = 'persist:chatgpt-data-export';
@@ -264,6 +264,14 @@ async function initialize(): Promise<void> {
     return true;
   });
   ipcMain.handle('app:verify', e => { ensureDashboard(e); if (state.running) throw new Error('Archive is busy'); void runVerify(); return true; });
+  ipcMain.handle('app:copy-diagnostics', async e => {
+    ensureDashboard(e);
+    if (state.running) throw new Error('Cannot copy diagnostics while modifying archive');
+    const diagnostic = await archiveDiagnosticText(state.output);
+    clipboard.writeText(diagnostic);
+    event('Sanitized download diagnostics copied; contains counts and route labels, never filenames or credentials.');
+    return true;
+  });
   ipcMain.handle('app:recover', e => {
     ensureDashboard(e);
     if (state.running) throw new Error('Archive is busy');

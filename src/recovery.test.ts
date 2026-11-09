@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Archive, workspaceKey, type CompletionMarker } from './archive.js';
-import { inspectArchive, recoverMissingAssets } from './recovery.js';
+import { archiveDiagnosticText, inspectArchive, recoverMissingAssets } from './recovery.js';
 import { Progress } from './progress.js';
 import type { Inventory } from './discovery.js';
 import type { ChatGptApi } from './api-types.js';
@@ -152,5 +152,33 @@ test('bounded recovery does not touch more missing files than selected', async (
     const p = await archive.read<{ missing: unknown[] }>(`${root}/projects/${project}/assets-index.json`);
     assert.equal(p?.missing.length, 1, 'Project file was not processed in the first one-file batch');
     assert.ok(paths.every(path => !path.includes('file_project_asset')));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('sanitized diagnostics aggregate route failures without exposing source IDs, server messages, or paths', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-safe-diag-'));
+  try {
+    const { archive } = await fixture(dir);
+    const path = `${root}/projects/${project}/assets-index.json`;
+    const index = await archive.read<{
+      files: unknown[]; names: unknown[];
+      missing: Array<{ id: string; reason: string; attempts?: unknown[] }>;
+    }>(path);
+    assert.ok(index);
+    index.missing[0]!.attempts = [
+      { route: 'project-signed', workspaceHeader: true, reason: 'HTTP 403 Bearer PRIVATE-TOKEN /users/alice/client.txt' },
+      { route: 'project-direct', workspaceHeader: false, reason: 'HTTP 404 /users/alice/client.txt' },
+      { route: 'https://private.example.com/secret', workspaceHeader: false,
+        reason: 'permission_error for file_project_asset' },
+    ];
+    await archive.json(path, index);
+    const overview = await inspectArchive(dir);
+    assert.ok(overview?.routeFailures.some(item =>
+      item.route === 'project-signed' && item.result === 'HTTP 403' && item.attempts === 1));
+    const summary = await archiveDiagnosticText(dir);
+    assert.match(summary, /project-signed \/ workspace header: HTTP 403 x1/);
+    assert.match(summary, /unrecognized route \/ default scope: permission_error x1/);
+    assert.doesNotMatch(summary, /PRIVATE-TOKEN|client\.txt|file_project_asset|private\.example\.com|\/users\/alice/);
+    assert.match(summary, /not unique files/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
