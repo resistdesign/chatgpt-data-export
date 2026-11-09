@@ -1,6 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import { Archive, type CompletionMarker, type SavedFile } from './archive.js';
-import { ApiError, RateLimitExhausted, SessionExpiredError, SessionCheckError } from './errors.js';
+import { ApiError, RateLimitExhausted, SessionExpiredError, SessionCheckError, ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import { saveAssets } from './assets.js';
 import { buildInventory, discoverWorkspaces, readDetail, record, array, str, type Inventory, type Workspace } from './discovery.js';
@@ -99,15 +99,20 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
     try {
       const detail = await api.get(`/backend-api/share/${shareId}`, workspace.id);
       await archive.json(`${root}/shared/${shareId}.json`, detail);
-    } catch (error) { sharedFailures.push(shareId + ': ' + (error instanceof Error ? error.message : String(error))); }
+    } catch (error) {
+      if (error instanceof ExportCancelledError || error instanceof SessionExpiredError ||
+        error instanceof SessionCheckError || error instanceof RateLimitExhausted) throw error;
+      sharedFailures.push(shareId + ': ' + (error instanceof Error ? error.message : String(error)));
+    }
   }
   const selected = inventory.conversations.slice(0, options.max);
   let completed = 0, skipped = 0, partial = 0;
   const failed: Array<{ id: string; reason: string }> = [];
   let index = 0;
+  let stoppingForFatalError = false;
   progress.set('Capturing', 0, selected.length, 'checking local checkpoints');
   const worker = async (): Promise<void> => {
-    while (!cancelled()) {
+    while (!cancelled() && !stoppingForFatalError) {
       const current = index++;
       const item = selected[current];
       if (!item) return;
@@ -131,25 +136,38 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           completed++;
         }
       } catch (error) {
-        // An expired login must interrupt the archive, not generate thousands of
-        // bogus per-conversation failures while the remaining queue drains.
-        if (error instanceof RateLimitExhausted || error instanceof SessionExpiredError || error instanceof SessionCheckError) throw error;
-        const reason = error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240);
-        failed.push({ id: item.id, reason });
-        await archive.journal(workspace.key, {
-          event: 'error', id: item.id, reason,
-          ...(error instanceof ApiError ? { httpStatus: error.status, endpoint: error.endpoint } : {}),
-        });
-        if (failed.length <= 10 || failed.length % 25 === 0) {
-          const kind = error instanceof ApiError ? `HTTP ${error.status}` : reason.slice(0, 80);
-          progress.info(`Conversation attempt ${current + 1}/${selected.length} failed (${kind}); ${failed.length} total errors. See journal.jsonl for details.`);
+        // An abandoned request is NOT a failed conversation. When a fatal
+        // error or user cancellation stops the queue, suppress cancellation
+        // fallout from the other in-flight workers.
+        if (error instanceof ExportCancelledError) {
+          if (!cancelled() && !stoppingForFatalError) {
+            stoppingForFatalError = true;
+            throw error;
+          }
+        } else if (error instanceof RateLimitExhausted || error instanceof SessionExpiredError ||
+          error instanceof SessionCheckError) {
+          stoppingForFatalError = true;
+          throw error;
+        } else if (!cancelled() && !stoppingForFatalError) {
+          const reason = error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240);
+          failed.push({ id: item.id, reason });
+          await archive.journal(workspace.key, {
+            event: 'error', id: item.id, reason,
+            ...(error instanceof ApiError ? { httpStatus: error.status, endpoint: error.endpoint } : {}),
+          });
+          if (failed.length <= 10 || failed.length % 25 === 0) {
+            const kind = error instanceof ApiError ? `HTTP ${error.status}` : reason.slice(0, 80);
+            progress.info(`Conversation attempt ${current + 1}/${selected.length} failed (${kind}); ${failed.length} total errors. See journal.jsonl for details.`);
+          }
         }
       }
-      // A failed attempt isn't saved data. Progress represents verified conversation
-      // completions, while the note explicitly tracks attempts and partial captures.
-      const verifiedComplete = completed - partial;
-      progress.set('Capturing', verifiedComplete, selected.length,
-        `${completed + failed.length} attempted; ${verifiedComplete} complete; ${partial} partial; ${skipped} reused; ${failed.length} errors`);
+      // A failed attempt is not saved data, and cancelled requests must not
+      // move the progress counter or create bogus error records.
+      if (!cancelled() && !stoppingForFatalError) {
+        const verifiedComplete = completed - partial;
+        progress.set('Capturing', verifiedComplete, selected.length,
+          `${completed + failed.length} attempted; ${verifiedComplete} complete; ${partial} partial; ${skipped} reused; ${failed.length} errors`);
+      }
     }
   };
   const tasks = Array.from({ length: options.concurrency }, () => worker());
@@ -159,9 +177,15 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
     await Promise.allSettled(tasks);
     await archive.json(`${root}/interrupted.json`, {
       at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error),
+      cause: {
+        name: error instanceof Error ? error.name : 'UnknownError',
+        ...(error instanceof ApiError ? { httpStatus: error.status, endpoint: error.endpoint } : {}),
+        ...(error instanceof RateLimitExhausted ? { endpoint: error.endpoint } : {}),
+        ...(error instanceof SessionCheckError ? { httpStatus: error.status } : {}),
+      },
       completed, partial, skipped, attempted: completed + failed.length, failed,
     });
-    progress.info(`Export interrupted: ${completed - partial} complete, ${partial} partial, ${failed.length} failed attempts. Check interrupted.json and journal.jsonl.`);
+    progress.info(`Export interrupted by ${error instanceof Error ? error.name : 'error'}: ${completed - partial} complete, ${partial} partial, ${failed.length} real failed attempts. See interrupted.json for the original cause.`);
     throw error;
   }
   const verification = await archive.verifyWorkspace(workspace.key);
