@@ -64,8 +64,11 @@ test('startup archive inspection is offline, checkpoint-based and honest about v
       partial: overview?.recordedPartial, missing: overview?.missingFiles,
       projectMissing: overview?.projectsWithMissing, unattempted: overview?.notYetCaptured,
       verified: overview?.verified,
+      blockers: overview?.blockers,
     }, { discovered: 1, complete: 0, partial: 1, missing: 2,
-      projectMissing: 1, unattempted: 0, verified: false });
+      projectMissing: 1, unattempted: 0, verified: false,
+      blockers: { permission_error: 2, 'HTTP 401': 0, 'HTTP 403': 0, 'HTTP 404': 0, other: 0 },
+    });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

@@ -18,6 +18,7 @@ export interface ArchiveOverview {
   projectsWithMissing: number;
   lastRunAt: string | null;
   lastRunStatus: string | null;
+  blockers: Record<'permission_error' | 'HTTP 401' | 'HTTP 403' | 'HTTP 404' | 'other', number>;
   /** Checkpoint counts do not constitute a hash verification. */
   verified: false;
 }
@@ -60,6 +61,14 @@ async function directories(archive: Archive, parent: string): Promise<string[]> 
  * Read only local checkpoint metadata, not conversations and not ChatGPT APIs.
  * Avoid hashing every file here: the separate Verify feature owns integrity.
  */
+function categorize(reason: string): keyof ArchiveOverview['blockers'] {
+  if (/permission_error/i.test(reason)) return 'permission_error';
+  if (/HTTP 401/i.test(reason)) return 'HTTP 401';
+  if (/HTTP 403/i.test(reason)) return 'HTTP 403';
+  if (/HTTP 404/i.test(reason)) return 'HTTP 404';
+  return 'other';
+}
+
 async function scan(output: string): Promise<ScanResult> {
   const archive = new Archive(output);
   const workspaceKeys = await directories(archive, 'workspaces');
@@ -69,6 +78,7 @@ async function scan(output: string): Promise<ScanResult> {
     notYetCaptured: 0, missingFiles: 0, projects: 0, projectFilesMissing: 0,
     projectsWithMissing: 0, lastRunAt: report?.at ?? null,
     lastRunStatus: report?.status ?? null, verified: false,
+    blockers: { permission_error: 0, 'HTTP 401': 0, 'HTTP 403': 0, 'HTTP 404': 0, other: 0 },
   };
   const targets: Target[] = [];
   let hasInventory = false;
@@ -87,6 +97,7 @@ async function scan(output: string): Promise<ScanResult> {
       else overview.recordedComplete++;
       overview.missingFiles += marker.missing.length;
       for (const entry of marker.missing) {
+        overview.blockers[categorize(entry.reason)]++;
         if (safe(entry.id)) targets.push({ workspaceKey, kind: 'conversation', ownerId: id, fileId: entry.id });
       }
     }
@@ -101,6 +112,7 @@ async function scan(output: string): Promise<ScanResult> {
       overview.projectFilesMissing += missing.length;
       overview.missingFiles += missing.length;
       for (const entry of missing) {
+        overview.blockers[categorize(String((entry as { reason?: unknown }).reason ?? ''))]++;
         if (safe(entry.id)) targets.push({ workspaceKey, kind: 'project', ownerId: project.id, fileId: entry.id });
       }
     }

@@ -15,6 +15,7 @@ interface UiState {
     notYetCaptured: number; missingFiles: number; projects: number;
     projectFilesMissing: number; projectsWithMissing: number;
     lastRunAt: string | null; lastRunStatus: string | null; verified: false;
+    blockers: Record<string, number>;
   } | null;
   archiveLoading: boolean;
   archiveError: string | null;
@@ -63,6 +64,10 @@ function render(state: UiState): void {
   text('archive-missing', saved
     ? `${saved.missingFiles.toLocaleString()} missing file references, including ${saved.projectFilesMissing.toLocaleString()} across ${saved.projectsWithMissing}/${saved.projects} Projects. Counts are from saved checkpoints, not hash verification.`
     : 'A small export will create a local inventory and resumable checkpoints.');
+  text('archive-blockers', saved
+    ? Object.entries(saved.blockers).filter(([, count]) => count > 0)
+      .map(([reason, count]) => `${reason}: ${count}`).join(' · ')
+    : '');
   (el('retry-missing') as HTMLButtonElement).disabled = state.running || !state.signedIn ||
     state.archiveLoading || !saved || saved.missingFiles === 0;
   text('stage', state.status);
