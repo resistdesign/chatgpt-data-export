@@ -6,6 +6,13 @@ import { ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import type { Progress } from './progress.js';
 
+export interface RouteFailure {
+  kind: 'project' | 'conversation';
+  route: string;
+  scope: 'workspace header' | 'default scope';
+  result: string;
+  attempts: number;
+}
 export interface ArchiveOverview {
   workspaces: number;
   discovered: number;
@@ -19,6 +26,8 @@ export interface ArchiveOverview {
   lastRunAt: string | null;
   lastRunStatus: string | null;
   blockers: Record<'permission_error' | 'HTTP 401' | 'HTTP 403' | 'HTTP 404' | 'other', number>;
+  /** Sanitized counts of download attempts. This is not a list of filenames or URLs. */
+  routeFailures: RouteFailure[];
   /** Checkpoint counts do not constitute a hash verification. */
   verified: false;
 }
@@ -69,6 +78,43 @@ function categorize(reason: string): keyof ArchiveOverview['blockers'] {
   return 'other';
 }
 
+const ALLOWED_ROUTES = new Set([
+  'sandbox-interpreter', 'sandbox-v2', 'sandbox-legacy',
+  'conversation-context-scoped', 'conversation-signed', 'conversation-short',
+  'conversation-direct', 'project-signed', 'project-direct', 'project-inline', 'project-file',
+]);
+
+function sanitizeAttemptResult(reason: unknown): string {
+  const value = typeof reason === 'string' ? reason : '';
+  if (/permission_error/i.test(value)) return 'permission_error';
+  for (const code of [401, 403, 404, 408, 429, 500, 502, 503, 504]) {
+    if (new RegExp(`\\bHTTP ${code}\\b`).test(value)) return `HTTP ${code}`;
+  }
+  if (/No downloadable URL/i.test(value)) return 'no download URL';
+  if (/Binary asset endpoint not supported/i.test(value)) return 'unsupported binary transport';
+  if (/Untrusted signed asset host/i.test(value)) return 'unsafe destination blocked';
+  return 'other';
+}
+
+function addAttemptCounts(
+  entry: { attempts?: unknown }, kind: RouteFailure['kind'],
+  counts: Map<string, RouteFailure>,
+): void {
+  if (!Array.isArray(entry.attempts)) return;
+  for (const attempt of entry.attempts.slice(0, 32)) {
+    if (!attempt || typeof attempt !== 'object') continue;
+    const item = attempt as Record<string, unknown>;
+    const route = typeof item.route === 'string' && ALLOWED_ROUTES.has(item.route)
+      ? item.route : 'unrecognized route';
+    const scope = item.workspaceHeader === false ? 'default scope' : 'workspace header';
+    const result = sanitizeAttemptResult(item.reason);
+    const key = JSON.stringify([kind, route, scope, result]);
+    const existing = counts.get(key);
+    if (existing) existing.attempts++;
+    else counts.set(key, { kind, route, scope, result, attempts: 1 });
+  }
+}
+
 async function scan(output: string): Promise<ScanResult> {
   const archive = new Archive(output);
   const workspaceKeys = await directories(archive, 'workspaces');
@@ -79,7 +125,9 @@ async function scan(output: string): Promise<ScanResult> {
     projectsWithMissing: 0, lastRunAt: report?.at ?? null,
     lastRunStatus: report?.status ?? null, verified: false,
     blockers: { permission_error: 0, 'HTTP 401': 0, 'HTTP 403': 0, 'HTTP 404': 0, other: 0 },
+    routeFailures: [],
   };
+  const routeCounts = new Map<string, RouteFailure>();
   const targets: Target[] = [];
   let hasInventory = false;
   for (const workspaceKey of workspaceKeys) {
@@ -98,6 +146,7 @@ async function scan(output: string): Promise<ScanResult> {
       overview.missingFiles += marker.missing.length;
       for (const entry of marker.missing) {
         overview.blockers[categorize(entry.reason)]++;
+        addAttemptCounts(entry, 'conversation', routeCounts);
         if (safe(entry.id)) targets.push({ workspaceKey, kind: 'conversation', ownerId: id, fileId: entry.id });
       }
     }
@@ -113,16 +162,43 @@ async function scan(output: string): Promise<ScanResult> {
       overview.missingFiles += missing.length;
       for (const entry of missing) {
         overview.blockers[categorize(String((entry as { reason?: unknown }).reason ?? ''))]++;
+        addAttemptCounts(entry as { attempts?: unknown }, 'project', routeCounts);
         if (safe(entry.id)) targets.push({ workspaceKey, kind: 'project', ownerId: project.id, fileId: entry.id });
       }
     }
   }
   overview.notYetCaptured = Math.max(0, overview.discovered - overview.recordedComplete - overview.recordedPartial);
+  overview.routeFailures = [...routeCounts.values()]
+    .sort((left, right) => right.attempts - left.attempts
+      || left.route.localeCompare(right.route) || left.result.localeCompare(right.result));
   return { overview: hasInventory ? overview : null, targets };
 }
 
 export async function inspectArchive(output: string): Promise<ArchiveOverview | null> {
   return (await scan(output)).overview;
+}
+
+/**
+ * Copyable diagnostic text: aggregate counts and known route labels ONLY.
+ * No account IDs, file IDs, filenames, paths, raw server messages or URLs.
+ */
+export async function archiveDiagnosticText(output: string): Promise<string> {
+  const overview = await inspectArchive(output);
+  if (!overview) return 'ChatGPT Data Export: no local archive inventory found.';
+  const categories = Object.entries(overview.blockers)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `  ${reason}: ${count} file records`);
+  const routes = overview.routeFailures.slice(0, 30)
+    .map(row => `  ${row.kind} / ${row.route} / ${row.scope}: ${row.result} x${row.attempts}`);
+  return [
+    'ChatGPT Data Export - safe missing-asset diagnostics',
+    `Workspaces: ${overview.workspaces}`,
+    `Conversations: ${overview.recordedComplete} saved, ${overview.recordedPartial} partial, ${overview.notYetCaptured} not captured`,
+    `Missing file references: ${overview.missingFiles}; Project files: ${overview.projectFilesMissing}`,
+    'Missing-record categories:', ...(categories.length ? categories : ['  none']),
+    'Failed route attempts (not unique files):', ...(routes.length ? routes : ['  no route attempts recorded']),
+    'Counts are from local checkpoint metadata, not a network or hash verification.',
+  ].join('\\n');
 }
 
 /**
