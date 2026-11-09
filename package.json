@@ -18,7 +18,7 @@
     "prestart": "yarn build"
   },
   "dependencies": {
-    "playwright-core": "^1.56.0"
+    "playwright-core": "^1.65.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

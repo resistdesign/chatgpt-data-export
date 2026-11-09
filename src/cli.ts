@@ -8,7 +8,7 @@ import { saveAssets } from './assets.js';
 import { buildInventory, discoverWorkspaces, readDetail, record, array, str, type Inventory, type Workspace } from './discovery.js';
 import { Progress } from './progress.js';
 
-interface Options { command: 'export' | 'verify'; output: string; profile: string; concurrency: number; delay: number; max: number | undefined; assets: boolean; refresh: boolean }
+interface Options { command: 'export' | 'verify'; output: string; concurrency: number; delay: number; max: number | undefined; assets: boolean; refresh: boolean }
 const usage = `ChatGPT Data Export v0.1.0
 
 Usage:
@@ -19,14 +19,15 @@ Options:
   --max-conversations N    Small test export (not a complete backup)
   --refresh-inventory     Re-enumerate all conversations and Projects
   --no-assets             Only save conversation data (not a complete backup)
-  --profile PATH          Dedicated Google Chrome login profile
   --help                  Show help
 
-Accesses ChatGPT using your own logged-in Chrome window. Never asks for or stores
+Attaches to an existing signed-in Chrome tab (Chrome 144+). Enable remote debugging
+at chrome://inspect/#remote-debugging and approve the connection prompt.
+Never starts Chrome or creates a profile/tab. Never asks for or stores
 an API key, password or pasted session token. All files are written locally.
 `;
 function args(argv: string[]): Options {
-  const base = { command: 'export' as const, output: join(homedir(), 'ChatGPT-Data-Export'), profile: join(homedir(), '.config', 'chatgpt-data-export', 'chrome-profile'), concurrency: 2, delay: 750, max: undefined as number | undefined, assets: true, refresh: false };
+  const base = { command: 'export' as const, output: join(homedir(), 'ChatGPT-Data-Export'), concurrency: 2, delay: 750, max: undefined as number | undefined, assets: true, refresh: false };
   const options: Options = { ...base };
   let at = 0;
   if (argv[0] === 'verify' || argv[0] === 'export') { options.command = argv[0]; at++; }
@@ -38,7 +39,6 @@ function args(argv: string[]): Options {
     const value = argv[++at];
     if (!value) throw new Error(`Missing value for ${key}`);
     if (key === '--output') options.output = resolve(value);
-    else if (key === '--profile') options.profile = resolve(value);
     else if (key === '--concurrency') options.concurrency = Number(value);
     else if (key === '--delay') options.delay = Number(value);
     else if (key === '--max-conversations') options.max = Number(value);
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
     return;
   }
   const progress = new Progress();
-  const api = new ChatGptBrowser(options.profile, options.delay, progress);
+  const api = new ChatGptBrowser(options.delay, progress);
   let cancelled = false;
   process.on('SIGINT', () => { cancelled = true; api.cancel(); progress.info('Cancellation requested. Retaining verified local checkpoints.'); });
   progress.start();
