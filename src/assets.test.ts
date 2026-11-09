@@ -124,3 +124,66 @@ test('untrusted signed URL hosts are still blocked', () => {
     assert.throws(() => safeDownloadUrl(url), /Untrusted signed asset host/);
   }
 });
+
+test('current conversation-scoped endpoint downloads directly and avoids older routes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-current-asset-'));
+  try {
+    const routes: string[] = [];
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      get: async path => { routes.push(path); throw new Error('Legacy route unexpectedly called'); },
+      openFile: async (path, scope) => {
+        routes.push(path);
+        assert.equal(scope, 'account-1');
+        return binary('scoped attachment bytes');
+      },
+    };
+    const data = { message: { content: { parts: [{
+      content_type: 'image_asset_pointer', asset_pointer: 'sediment://file_scoped_asset',
+    }] } } };
+    const archive = new Archive(dir);
+    const result = await saveAssets(api, archive, workspace, 'workspaces/test/conversations/chat_one',
+      data, { conversationId: 'chat_one' });
+    assert.equal(result.missing.length, 0);
+    assert.equal(result.files.length, 1);
+    assert.deepEqual(routes, [
+      '/backend-api/files/download/file_scoped_asset?check_context_scopes_for_conversation_id=chat_one&download_intent=true',
+    ]);
+    assert.equal(await readFile(archive.path(result.files[0]!.path), 'utf8'), 'scoped attachment bytes');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('current conversation-scoped failure falls back to the older signed-link route', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-current-fallback-'));
+  const routes: string[] = [];
+  try {
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      openFile: async path => {
+        routes.push(path);
+        return new Response('file not found', { status: 404 });
+      },
+      get: async path => {
+        routes.push(path);
+        // The old JSON endpoint can still be supported on some accounts.
+        return { status: 'success', download_url: '/backend-api/estuary/content?id=file_test' };
+      },
+    };
+    // Mock the authenticated binary response from the signed ChatGPT URL.
+    api.openFile = async path => {
+      routes.push(path);
+      return path.startsWith('/backend-api/estuary/') ? binary('signed link bytes')
+        : new Response('file not found', { status: 404 });
+    };
+    const data = { message: { content: { parts: [{
+      content_type: 'image_asset_pointer', asset_pointer: 'sediment://file_test',
+    }] } } };
+    const archive = new Archive(dir);
+    const result = await saveAssets(api, archive, workspace, 'workspaces/test/conversations/chat_test',
+      data, { conversationId: 'chat_test' });
+    assert.equal(result.missing.length, 0);
+    assert.equal(await readFile(archive.path(result.files[0]!.path), 'utf8'), 'signed link bytes');
+    assert.ok(routes[0]?.includes('check_context_scopes_for_conversation_id=chat_test'));
+    assert.ok(routes.some(route => route.includes('conversation_id=chat_test&inline=false')));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
