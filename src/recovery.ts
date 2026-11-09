@@ -97,7 +97,7 @@ function sanitizeAttemptResult(reason: unknown): string {
 }
 
 function addAttemptCounts(
-  entry: { attempts?: unknown }, kind: RouteFailure['kind'],
+  entry: { id: string; attempts?: unknown }, kind: RouteFailure['kind'],
   counts: Map<string, RouteFailure>,
 ): void {
   if (!Array.isArray(entry.attempts)) return;
@@ -162,7 +162,7 @@ async function scan(output: string): Promise<ScanResult> {
       overview.missingFiles += missing.length;
       for (const entry of missing) {
         overview.blockers[categorize(String((entry as { reason?: unknown }).reason ?? ''))]++;
-        addAttemptCounts(entry as { attempts?: unknown }, 'project', routeCounts);
+        addAttemptCounts(entry as { id: string; attempts?: unknown }, 'project', routeCounts);
         if (safe(entry.id)) targets.push({ workspaceKey, kind: 'project', ownerId: project.id, fileId: entry.id });
       }
     }
