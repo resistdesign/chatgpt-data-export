@@ -27,3 +27,6 @@ main { max-width:1040px; margin:auto; padding:32px 38px 40px; }
 
 .archive-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 #archive-routes { overflow-wrap:anywhere; color:#bdcbe0; }
+
+.file-observer { padding-top:12px; margin-top:12px; border-top:1px solid #29394d; }
+.file-observer p { color:#9fb4ce; font-size:12px; }

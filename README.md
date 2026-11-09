@@ -107,3 +107,9 @@ An unavailable resource is still unavailable if the provider denies every permit
 ### Safe attachment diagnostics
 
 **Copy safe diagnostic summary** copies only aggregate missing-file counts and a histogram of download-method failures (such as HTTP 403 with a workspace header). The diagnostic summary is generated from the existing archive without using the network. It intentionally excludes account identifiers, conversation and file identifiers, filenames, request URLs, access tokens, signed links, and raw server responses. The histogram counts failed **route attempts**, not unique files.
+
+### Observe ChatGPT's real Project-file download method (privacy-safe)
+
+For a file that remains inaccessible, click **Observe one ChatGPT download**. The app opens its already-authenticated ChatGPT window. Navigate to a Project and click Download on one of its files. Return to the export dashboard and click **Stop observing download**, then **Copy safe diagnostic summary**. The summary adds the actual successful/failed file API **route shapes, query parameter names, and HTTP statuses** seen in the embedded window. It captures no file IDs, names, URLs, response bodies, cookies, access tokens, or request headers, and never writes the observed requests to disk. Observation is strictly opt-in and only observes the app-owned sign-in window. It stops when that window closes. No external Chrome settings or debugging connection are needed.
+
+If ChatGPT's own interface cannot download that file, this suggests the issue may be provider-side or permission-related, not merely the exporter's API route.

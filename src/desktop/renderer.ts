@@ -23,6 +23,13 @@ interface UiState {
   } | null;
   archiveLoading: boolean;
   archiveError: string | null;
+  fileObservation: {
+    active: boolean;
+    requests: Array<{
+      route: string; method: 'GET' | 'POST' | 'other';
+      queryKeys: string[]; otherQueryKeys: number; status: string;
+    }>;
+  };
 }
 interface AppBridge {
   state(): Promise<UiState>;
@@ -32,6 +39,7 @@ interface AppBridge {
   start(limit: 25 | null): Promise<boolean>;
   recover(): Promise<boolean>;
   copyDiagnostics(): Promise<boolean>;
+  observeFile(): Promise<boolean>;
   verify(): Promise<boolean>;
   stop(): Promise<boolean>;
   openOutput(): Promise<boolean>;
@@ -78,6 +86,15 @@ function render(state: UiState): void {
       saved.routeFailures.slice(0, 4)
         .map(item => `${item.route} [${item.scope}]: ${item.result} ×${item.attempts}`).join(' · ')
     : 'No per-route diagnostics recorded yet.');
+  const observe = el('observe-file') as HTMLButtonElement;
+  observe.disabled = state.running;
+  observe.textContent = state.fileObservation.active ? 'Stop observing download' : 'Observe one ChatGPT download';
+  const observed = state.fileObservation.requests;
+  text('observation-status', state.fileObservation.active
+    ? `Observing this app's ChatGPT window. ${observed.length} file requests captured. Click a Project file's Download control in ChatGPT, then stop observing.`
+    : observed.length
+      ? `${observed.length} sanitized file API responses captured. Use Copy safe diagnostic summary to share the results.`
+      : 'Optional: observe a real Project download in the app-owned ChatGPT window to identify the correct API route. Only route shapes and HTTP statuses are collected.');
   (el('copy-diagnostics') as HTMLButtonElement).disabled = state.running ||
     state.archiveLoading || !saved || saved.missingFiles === 0;
   (el('retry-missing') as HTMLButtonElement).disabled = state.running || !state.signedIn ||
@@ -125,6 +142,7 @@ button('export-all', () => app.start(null));
 button('test-25', () => app.start(25));
 button('retry-missing', () => app.recover());
 button('copy-diagnostics', () => app.copyDiagnostics());
+button('observe-file', () => app.observeFile());
 button('stop', () => app.stop());
 button('verify', () => app.verify());
 button('open-output', () => app.openOutput());

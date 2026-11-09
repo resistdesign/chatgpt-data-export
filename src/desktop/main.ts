@@ -8,6 +8,7 @@ import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
 import { SessionExpiredError, SessionCheckError, ExportCancelledError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
 import { inspectArchive, archiveDiagnosticText, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
+import { summarizeFileRequest, formatObservedRequests, type ObservedFileRequest } from './request-observer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PARTITION = 'persist:chatgpt-data-export';
@@ -26,12 +27,14 @@ interface UiState {
   archive: ArchiveOverview | null;
   archiveLoading: boolean;
   archiveError: string | null;
+  fileObservation: { active: boolean; requests: ObservedFileRequest[] };
 }
 
 const state: UiState = {
   signedIn: false, output: join(homedir(), 'ChatGPT-Data-Export'), running: false,
   activity: 'idle', status: 'Ready to connect', error: null, progress: null, result: null, events: [],
   archive: null, archiveLoading: true, archiveError: null,
+  fileObservation: { active: false, requests: [] },
 };
 let dashboard: BrowserWindow | null = null;
 let signInWindow: BrowserWindow | null = null;
@@ -101,6 +104,38 @@ async function authenticate(): Promise<boolean> {
   return state.signedIn;
 }
 
+/**
+ * Opt-in observation of only the authenticated ChatGPT window's file API calls.
+ * Uses Electron's own Session; never requests, stores or forwards credentials,
+ * file names, IDs, URLs, response bodies, or request/response headers.
+ */
+function stopFileObservation(): void {
+  if (!state.fileObservation.active) return;
+  session.fromPartition(PARTITION).webRequest.onCompleted(null);
+  state.fileObservation.active = false;
+  event(`Download observation stopped: ${state.fileObservation.requests.length} sanitized file API responses.`);
+}
+function toggleFileObservation(): void {
+  if (state.running) throw new Error('Finish the archive operation before observing a download');
+  if (state.fileObservation.active) {
+    stopFileObservation();
+    return;
+  }
+  state.fileObservation = { active: true, requests: [] };
+  const filter = { urls: ['https://chatgpt.com/backend-api/*'] };
+  session.fromPartition(PARTITION).webRequest.onCompleted(filter, details => {
+    const signIn = signInWindow;
+    if (!state.fileObservation.active || !signIn || signIn.isDestroyed() ||
+      details.webContentsId !== signIn.webContents.id) return;
+    const item = summarizeFileRequest(details.url, details.statusCode, details.method);
+    if (!item) return;
+    state.fileObservation.requests = [...state.fileObservation.requests, item].slice(-30);
+    broadcast();
+  });
+  openSignIn();
+  event('Observe mode enabled. In the ChatGPT window, open a Project and click Download on one file. Return here and stop observation.');
+}
+
 function isHttps(input: string): boolean {
   try { return new URL(input).protocol === 'https:'; } catch { return false; }
 }
@@ -123,7 +158,7 @@ function openSignIn(): void {
     : { action: 'deny' });
   const refresh = (): void => { void authenticate().then(ok => { if (ok) event('Signed in to ChatGPT. This app will retain its session between launches.'); }); };
   win.webContents.on('did-finish-load', refresh);
-  win.on('closed', () => { signInWindow = null; void authenticate(); });
+  win.on('closed', () => { stopFileObservation(); signInWindow = null; void authenticate(); });
   void win.loadURL(CHATGPT).catch(err => { event(`Sign-in page failed to load: ${description(err)}`); });
 }
 
@@ -268,8 +303,17 @@ async function initialize(): Promise<void> {
     ensureDashboard(e);
     if (state.running) throw new Error('Cannot copy diagnostics while modifying archive');
     const diagnostic = await archiveDiagnosticText(state.output);
-    clipboard.writeText(diagnostic);
-    event('Sanitized download diagnostics copied; contains counts and route labels, never filenames or credentials.');
+    const observed = state.fileObservation.requests;
+    const observedSection = observed.length
+      ? '\n\nObserved real ChatGPT file API responses (no URLs or values):\n' + formatObservedRequests(observed).join('\n')
+      : '';
+    clipboard.writeText(diagnostic + observedSection);
+    event('Safe diagnostics copied: aggregate archive failures and any observed file API route shapes; no identifiers or credentials.');
+    return true;
+  });
+  ipcMain.handle('app:observe-file', e => {
+    ensureDashboard(e);
+    toggleFileObservation();
     return true;
   });
   ipcMain.handle('app:recover', e => {
@@ -290,6 +334,7 @@ async function initialize(): Promise<void> {
 }
 
 app.on('before-quit', e => {
+  stopFileObservation();
   if (state.running && !quitRequested) {
     e.preventDefault();
     quitRequested = true;
