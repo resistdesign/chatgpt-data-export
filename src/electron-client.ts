@@ -144,20 +144,42 @@ export class ElectronSessionClient implements ChatGptApi {
     const url = validateApiPath(path);
     if (!this.token) this.token = await this.sessionToken();
     if (!this.token) throw new SessionExpiredError(path);
-    await this.pace();
-    const headers: Record<string, string> = {
-      accept: '*/*',
-      authorization: `Bearer ${this.token}`,
-    };
-    if (workspaceId) headers['ChatGPT-Account-Id'] = workspaceId;
-    return this.session.fetch(url, {
-      method: 'GET',
-      headers,
-      credentials: 'include',
-      cache: 'no-store',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(timeout),
-    });
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await this.pace();
+      const headers: Record<string, string> = {
+        accept: '*/*',
+        authorization: `Bearer ${this.token}`,
+      };
+      if (workspaceId) headers['ChatGPT-Account-Id'] = workspaceId;
+      response = await this.session.fetch(url, {
+        method: 'GET',
+        headers,
+        credentials: 'include',
+        cache: 'no-store',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (response.status !== 401) break;
+      // A 401 on a binary file route might be a restricted file, not an
+      // expired login. Refresh once and then verify the account scope.
+      const oldToken: string | undefined = this.token;
+      this.token = await this.sessionToken();
+      if (!this.token) throw new SessionExpiredError(path);
+      if (this.token !== oldToken && attempt === 0) continue;
+      const account = await this.request(
+        validateApiPath('/backend-api/accounts/check/v4-2023-04-27'), null, this.token,
+      );
+      const accounts = (account.body as { accounts?: unknown } | null)?.accounts;
+      if (account.status === 200 && accounts && typeof accounts === 'object' &&
+        !Array.isArray(accounts) && Object.keys(accounts).length > 0) {
+        throw new ResourceDeniedError(path);
+      }
+      if (account.status === 401 || account.status === 403) throw new SessionExpiredError(path);
+      throw new SessionCheckError(account.status);
+    }
+    if (!response) throw new Error('Binary asset request failed before a response was received');
+    return response;
   }
 
   private async request(url: string, workspaceId: string | null, token: string): Promise<FetchReply> {
