@@ -22,7 +22,7 @@ If you're testing an open PR, check out its feature branch before `yarn install`
 1. Click **Open ChatGPT sign-in**. An embedded Chromium window opens. Sign into your own ChatGPT account there, including any MFA. Close the sign-in window when you're done.
 2. Click **Check connection** to confirm that the application can read your authenticated session.
 3. Choose an ordinary **local folder** for the archive. Default: `~/ChatGPT-Data-Export`. Avoid a live cloud-synced folder during large backups.
-4. Click **Test 25 chats** first. Inspect the resulting reports. Then click **Export everything available** to resume from those verified files.
+4. Click **Test 25 chats per workspace** first. Inspect the resulting reports. Then click **Export everything available** to resume from those verified files.
 5. Click **Verify archive** to re-hash saved data offline, and **Open export folder** to review your files.
 
 The application keeps its own encrypted/session cookie store **as managed by Electron/Chromium**, separate from Chrome. The exact at-rest protections vary by OS. It reuses the same persistent `persist:chatgpt-data-export` session on later launches. You don't need to alter Chrome's settings, install an extension or authorize Chrome debugging. The short-lived access token is kept in memory and is not stored by our app.

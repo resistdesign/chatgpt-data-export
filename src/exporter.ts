@@ -125,7 +125,9 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           completed++;
         }
       } catch (error) {
-        if (error instanceof RateLimitExhausted) throw error;
+        // An expired login must interrupt the archive, not generate thousands of
+        // bogus per-conversation failures while the remaining queue drains.
+        if (error instanceof RateLimitExhausted || (error instanceof ApiError && error.status === 401)) throw error;
         const reason = error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240);
         failed.push({ id: item.id, reason });
         await archive.journal(workspace.key, { event: 'error', id: item.id, reason });
