@@ -196,15 +196,25 @@ export async function saveAssets(
   source: unknown,
   opts: {
     conversationId?: string; projectId?: string; projectFiles?: unknown[]; existing?: SavedFile[];
+    /** Target only selected missing file IDs; retain untouched prior index entries. */
+    onlyIds?: ReadonlySet<string>;
+    existingMissing?: AssetResult['missing'];
     onProgress?: (update: AssetProgress) => void;
   },
 ): Promise<AssetResult> {
-  const files: SavedFile[] = [];
-  const missing: AssetResult['missing'] = [];
   const refs = assetReferences(source, opts.projectFiles);
-  for (const [assetIndex, ref] of refs.entries()) {
+  const selected = opts.onlyIds ? refs.filter(ref => opts.onlyIds?.has(ref.id)) : refs;
+  const selectedPaths = new Set(selected.map(ref => `${root}/assets/${safeId(ref.id)}`));
+  // A targeted pass must NEVER drop unrelated prior files or missing records.
+  const files: SavedFile[] = opts.onlyIds
+    ? (opts.existing ?? []).filter(file => !selectedPaths.has(file.path))
+    : [];
+  const missing: AssetResult['missing'] = opts.onlyIds
+    ? (opts.existingMissing ?? []).filter(entry => !selectedPaths.has(`${root}/assets/${safeId(entry.id)}`))
+    : [];
+  for (const [assetIndex, ref] of selected.entries()) {
     const update = (method: string, processed = assetIndex): void => {
-      opts.onProgress?.({ processed, total: refs.length, current: assetIndex + 1, method });
+      opts.onProgress?.({ processed, total: selected.length, current: assetIndex + 1, method });
     };
     update('Checking existing file');
     const output = `${root}/assets/${safeId(ref.id)}`;
