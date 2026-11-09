@@ -131,3 +131,10 @@ Optional browser request observation now records **literal boolean values only**
 The opt-in download observer also compares a browser file request to the archive's missing **Project/file identifier pair entirely in memory**, reporting only whether it is the **same missing Project file**. A successful browser response for a different file is not evidence that the missing one is accessible. No identifiers are copied to diagnostics.
 
 **Exact-file browser comparison:** The observation button identifies one missing Project attachment that still exists in the saved Project file listing. It shows the original Project and filename only in the user's local dashboard and opens that Project in the app-owned ChatGPT window. The private identifiers are compared in memory to observed download requests; the copied summary includes only "same missing Project file: YES/no." If that attachment is no longer available in ChatGPT's UI, note that rather than assuming a different file's successful download proves accessibility.
+
+
+### Recommended: back up the conversation history before attachments
+
+Click **Back up conversations first** for an account-wide, resumable, history-first pass. This reuses the existing inventory and verified conversation checkpoints; saves raw conversation JSON and Project/account metadata; and indexes missing attachments **without downloading any asset bytes**. Previously verified attachments are retained in their original locations, and unavailable/deferred attachments remain explicitly marked missing. Project file lists and individual asset references can be recovered later. The archive correctly remains **partial** while attachments are deferred.
+
+**Include attachments (slower)** is a separate mode for downloading accessible file bytes. It will retry inaccessible attachments, so run the fast pass first when the immediate priority is backing up the full conversation history. The 25-item test still includes attachment attempts. An interruption retains completed conversation checkpoints; resume the same mode without clearing the archive.

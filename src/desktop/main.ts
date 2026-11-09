@@ -223,8 +223,10 @@ function createDashboard(): void {
   void dashboard.loadFile(join(here, 'ui', 'index.html'));
 }
 
-async function runExport(limit: 25 | null): Promise<void> {
-  startJob('exporting', limit === null ? 'Exporting everything available' : 'Testing 25 conversations + up to 3 Projects per workspace');
+async function runExport(limit: 25 | null, historyFirst = false): Promise<void> {
+  startJob('exporting', historyFirst ? 'Backing up conversations first (attachments deferred)'
+    : limit === null ? 'Exporting everything including files'
+      : 'Testing 25 conversations + up to 3 Projects per workspace');
   const progress = new Progress(snapshot => { state.progress = snapshot; if (snapshot.message) event(snapshot.message); else broadcast(); }, false);
   const client = new ElectronSessionClient(session.fromPartition(PARTITION), 750, progress);
   const job = { api: client, cancelled: false };
@@ -232,7 +234,14 @@ async function runExport(limit: 25 | null): Promise<void> {
   progress.start();
   try {
     if (!await client.authenticated()) throw new Error('ChatGPT sign-in is required. Use the Sign in button, then try again.');
-    const options: ExportOptions = { output: state.output, concurrency: 2, max: limit === null ? undefined : limit, assets: true, refresh: limit === null };
+    const options: ExportOptions = {
+      output: state.output, concurrency: 2,
+      max: limit === null ? undefined : limit,
+      assets: !historyFirst,
+      // Reuse the 4,133-item inventory already captured, rather than
+      // restarting pagination before the main conversation backup.
+      refresh: false,
+    };
     const report = await exportAll(client, options, progress, () => job.cancelled);
     state.status = report.status === 'complete' ? 'Export completed' : report.status === 'cancelled' ? 'Export stopped' : 'Export finished with incomplete coverage';
     state.result = `Export ${report.status}. Review report.json before treating the archive as complete.`;
@@ -327,9 +336,9 @@ async function initialize(): Promise<void> {
   });
   ipcMain.handle('app:start', (e, limit: unknown) => {
     ensureDashboard(e);
-    if (limit !== null && limit !== 25) throw new Error('Invalid export mode');
+    if (limit !== null && limit !== 25 && limit !== 'history') throw new Error('Invalid export mode');
     if (state.running) throw new Error('An archive operation is already running');
-    void runExport(limit);
+    void runExport(limit === 'history' ? null : limit, limit === 'history');
     return true;
   });
   ipcMain.handle('app:verify', e => { ensureDashboard(e); if (state.running) throw new Error('Archive is busy'); void runVerify(); return true; });

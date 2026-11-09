@@ -325,3 +325,56 @@ export async function saveAssets(
   });
   return { files, missing, attempted: selected.length, unlisted };
 }
+
+
+/**
+ * Queue attachments for a later pass, without making ANY file API requests.
+ * Used for history-first exports so broken Project files cannot block chats.
+ *
+ * Existing verified files are preserved. Every uncollected reference receives
+ * an explicit "deferred" marker, so no partial archive claims completeness.
+ */
+export async function deferAssets(
+  archive: Archive,
+  root: string,
+  source: unknown,
+  opts: {
+    projectFiles?: unknown[];
+    existing?: SavedFile[];
+    existingMissing?: AssetResult['missing'];
+    existingNames?: Array<{ id: string; name: string | null }>;
+  } = {},
+): Promise<AssetResult> {
+  const refs = assetReferences(source, opts.projectFiles);
+  const files: SavedFile[] = [];
+  for (const previous of opts.existing ?? []) {
+    if (await archive.verified(previous)) files.push(previous);
+  }
+  const savedPaths = new Set(files.map(file => file.path));
+  const missing = [...(opts.existingMissing ?? [])];
+  const covered = new Set(missing.map(item => item.id));
+  for (const ref of refs) {
+    if (savedPaths.has(`${root}/assets/${safeId(ref.id)}`)) continue;
+    if (!covered.has(ref.id)) {
+      missing.push({ id: ref.id, reason: 'Download deferred to later file recovery' });
+      covered.add(ref.id);
+    }
+  }
+  // If a previously downloaded file fails verification, it stays reported as
+  // missing; do not silently discard its reference or mark it complete.
+  for (const file of opts.existing ?? []) {
+    if (savedPaths.has(file.path)) continue;
+    const id = file.path.split('/').at(-1);
+    if (id && !covered.has(id)) {
+      missing.push({ id, reason: 'Previously saved file requires verification or re-download' });
+      covered.add(id);
+    }
+  }
+  const names = new Map<string, string | null>();
+  for (const item of opts.existingNames ?? []) names.set(item.id, item.name);
+  for (const ref of refs) names.set(ref.id, ref.name);
+  await archive.json(`${root}/assets-index.json`, {
+    files, missing, names: [...names].map(([id, name]) => ({ id, name })),
+  });
+  return { files, missing, attempted: 0, unlisted: 0 };
+}

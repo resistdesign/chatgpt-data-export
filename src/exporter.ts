@@ -2,7 +2,7 @@ import { readdir } from 'node:fs/promises';
 import { Archive, type CompletionMarker, type SavedFile } from './archive.js';
 import { ApiError, RateLimitExhausted, SessionExpiredError, SessionCheckError, ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
-import { saveAssets } from './assets.js';
+import { saveAssets, deferAssets } from './assets.js';
 import { buildInventory, discoverWorkspaces, readDetail, record, array, str, type Inventory, type Workspace } from './discovery.js';
 import type { Progress } from './progress.js';
 
@@ -88,6 +88,7 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
     ? previous : await buildInventory(api, workspace, progress);
   if (inventory !== previous) await archive.json(`${root}/inventory.json`, inventory);
   progress.info(`Workspace ${workspace.label}: ${inventory.conversations.length} conversations, ${inventory.projects.length} Projects. Inventory ${previous === inventory ? 'resumed' : 'saved'}.`);
+  if (!options.assets) progress.info('History-first export: saving conversation JSON and Project metadata now; attachment downloads are deferred.');
   const account = await captureAccount(api, archive, workspace, progress);
   const selected = inventory.conversations.slice(0, options.max);
   const pilot = options.max !== undefined;
@@ -97,27 +98,36 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
   if (pilot) {
     progress.info(`Pilot: checking ${projectTargets.length}/${inventory.projects.length} representative Projects. A full export checks every Project.`);
   }
-  progress.set('Saving Project files', 0, projectTargets.length, 'Checking Project metadata and attached files');
+  progress.set(options.assets ? 'Saving Project files' : 'Saving Project metadata', 0, projectTargets.length,
+    options.assets ? 'Checking Project attachments' : 'Saving Project metadata without downloading attachments');
   for (const [index, project] of projectTargets.entries()) {
     const projectRoot = `${root}/projects/${project.id}`;
     const info = await archive.json(`${projectRoot}/info.json`, project.details ?? project.raw);
-    let projectFiles: SavedFile[] = [];
-    if (options.assets) {
-      const previousAssets = await archive.read<{ files: SavedFile[] }>(`${projectRoot}/assets-index.json`);
-      const assets = await saveAssets(api, archive, workspace, projectRoot, project.details ?? project.raw, {
+    const previousAssets = await archive.read<{
+      files: SavedFile[];
+      missing: Array<{ id: string; reason: string }>;
+      names?: Array<{ id: string; name: string | null }>;
+    }>(`${projectRoot}/assets-index.json`);
+    const assets = options.assets
+      ? await saveAssets(api, archive, workspace, projectRoot, project.details ?? project.raw, {
         projectId: project.id, projectFiles: project.files, existing: previousAssets?.files,
         onProgress: asset => progress.set('Saving Project files', index, projectTargets.length,
           `Project ${index + 1}/${projectTargets.length}: file ${asset.current}/${asset.total} · ${asset.method}`),
+      })
+      : await deferAssets(archive, projectRoot, project.details ?? project.raw, {
+        projectFiles: project.files, existing: previousAssets?.files,
+        existingMissing: previousAssets?.missing, existingNames: previousAssets?.names,
       });
-      projectFiles = assets.files;
-      if (assets.missing.length) projectMissing.push(project.id);
-    }
+    const projectFiles = assets.files;
+    if (assets.missing.length) projectMissing.push(project.id);
     await archive.json(`${projectRoot}/manifest.json`, { files: [info, ...projectFiles] });
-    progress.set('Saving Project files', index + 1, projectTargets.length,
-      `${index + 1} Projects checked; ${projectMissing.length} missing asset sets`);
+    progress.set(options.assets ? 'Saving Project files' : 'Saving Project metadata', index + 1, projectTargets.length,
+      `${index + 1} Projects checked; ${projectMissing.length} deferred or missing asset sets`);
     // A long list of attachment fallbacks can take several minutes. Never
     // leave the Activity log silent for ten entire Projects.
-    progress.info(`Project files: ${index + 1}/${projectTargets.length} checked; ${projectMissing.length} missing asset sets.`);
+    if ((index + 1) % 5 === 0 || index + 1 === projectTargets.length) {
+      progress.info(`Projects: ${index + 1}/${projectTargets.length} metadata saved; ${projectMissing.length} have deferred or missing attachments.`);
+    }
   }
   // Shared-only links may not have an owner conversation ID. Keep their raw listing
   // and attempt to capture the share itself without pretending it's a normal chat.
@@ -163,11 +173,18 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           const source = reusable ? await archive.read<unknown>(prior.raw.path) : await readDetail(api, workspace, item.id);
           if (!source) throw new Error('Conversation detail is missing');
           const raw = reusable ? prior.raw : await archive.json(`${conversationRoot}/raw.json`, source);
-          const assets = options.assets ? await saveAssets(api, archive, workspace, conversationRoot, source, {
-            conversationId: item.id, projectId: item.projectId, existing: prior?.files,
-            onProgress: asset => captureProgress(
-              `Conversation ${current + 1}/${selected.length}: file ${asset.current}/${asset.total} · ${asset.method}`),
-          }) : { files: [], missing: [{ id: '*', reason: 'Assets intentionally disabled' }] };
+          const assets = options.assets
+            ? await saveAssets(api, archive, workspace, conversationRoot, source, {
+              conversationId: item.id, projectId: item.projectId, existing: prior?.files,
+              onProgress: asset => captureProgress(
+                `Conversation ${current + 1}/${selected.length}: file ${asset.current}/${asset.total} · ${asset.method}`),
+            })
+            : await deferAssets(archive, conversationRoot, source, {
+              existing: prior?.files, existingMissing: prior?.missing,
+              existingNames: (await archive.read<{ names?: Array<{ id: string; name: string | null }> }>(
+                `${conversationRoot}/assets-index.json`,
+              ))?.names,
+            });
           const marker: CompletionMarker = {
             schema: 1, id: item.id, updated: item.updated, raw, files: assets.files, missing: assets.missing, completedAt: new Date().toISOString(),
           };
@@ -232,7 +249,10 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
     progress.info(`Export interrupted by ${error instanceof Error ? error.name : 'error'}: ${completed - partial} complete, ${partial} partial, ${failed.length} real failed attempts. See interrupted.json for the original cause.`);
     throw error;
   }
-  const verification = await archive.verifyWorkspace(workspace.key);
+  progress.set('Verifying saved archive', 0, inventory.conversations.length, 'Checking local completion markers and file hashes');
+  const verification = await archive.verifyWorkspace(workspace.key, (done, total) => {
+    progress.set('Verifying saved archive', done, total, 'Hashing saved conversation data; no network access');
+  });
   const report = {
     workspace: { label: workspace.label, key: workspace.key, kind: workspace.kind },
     inventoryGeneratedAt: inventory.generatedAt, discovered: inventory.conversations.length,
