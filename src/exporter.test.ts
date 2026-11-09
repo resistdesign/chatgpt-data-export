@@ -103,17 +103,21 @@ test('one fatal HTTP 401 keeps the original cause and never journals cancellatio
 
     let cancelled = false;
     let releaseInFlight: (() => void) | undefined;
+    let signalInFlightStarted!: () => void;
+    const inFlightStarted = new Promise<void>(resolve => { signalInFlightStarted = resolve; });
     const requests: string[] = [];
     const endpoint = '/backend-api/conversations/chat_expired?include_has_versions=true&num_turns=100';
     const api: ChatGptApi = {
       get: async path => {
         if (path.includes('chat_expired')) {
-          await new Promise<void>(resolve => { setImmediate(resolve); });
+          // Ensure the second request is in flight before expiring the session:
+          // Node 22 can schedule these otherwise and leave the mock unresolved.
+          await inFlightStarted;
           throw new SessionExpiredError(path);
         }
         if (path.includes('chat_inflight')) {
           requests.push('inflight');
-          await new Promise<void>(resolve => { releaseInFlight = resolve; });
+          await new Promise<void>(resolve => { releaseInFlight = resolve; signalInFlightStarted(); });
           if (cancelled) throw new ExportCancelledError();
           throw new Error('This request was supposed to be cancelled');
         }
