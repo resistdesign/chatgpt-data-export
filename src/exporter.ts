@@ -164,7 +164,7 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           if (!source) throw new Error('Conversation detail is missing');
           const raw = reusable ? prior.raw : await archive.json(`${conversationRoot}/raw.json`, source);
           const assets = options.assets ? await saveAssets(api, archive, workspace, conversationRoot, source, {
-            conversationId: item.id, existing: prior?.files,
+            conversationId: item.id, projectId: item.projectId, existing: prior?.files,
             onProgress: asset => captureProgress(
               `Conversation ${current + 1}/${selected.length}: file ${asset.current}/${asset.total} · ${asset.method}`),
           }) : { files: [], missing: [{ id: '*', reason: 'Assets intentionally disabled' }] };

@@ -113,3 +113,9 @@ An unavailable resource is still unavailable if the provider denies every permit
 For a file that remains inaccessible, click **Observe one ChatGPT download**. The app opens its already-authenticated ChatGPT window. Navigate to a Project and click Download on one of its files. Return to the export dashboard and click **Stop observing download**, then **Copy safe diagnostic summary**. The summary adds the actual successful/failed file API **route shapes, query parameter names, and HTTP statuses** seen in the embedded window. It captures no file IDs, names, URLs, response bodies, cookies, access tokens, or request headers, and never writes the observed requests to disk. Observation is strictly opt-in and only observes the app-owned sign-in window. It stops when that window closes. No external Chrome settings or debugging connection are needed.
 
 If ChatGPT's own interface cannot download that file, this suggests the issue may be provider-side or permission-related, not merely the exporter's API route.
+
+### Download route compatibility (November 2026)
+
+During an opt-in observation of ChatGPT's own authenticated window, Project downloads returned HTTP 200 from `/backend-api/files/download/{id}` with the query names `gizmo_id`, `download_intent`, and `inline`. The exporter now prioritizes that combination for Project files, accepting either a direct file or a JSON descriptor with a signed estuary URL. Chats inside Projects also try the observed `/backend-api/files/{id}/simple` and context-scoped download routes with both conversation and Project IDs.
+
+This improves route compatibility but does **not** guarantee permissions for every historical file. Do not treat a 200 response to a metadata endpoint as proof that an asset was downloaded; only saved, hashed file bytes count.

@@ -23,7 +23,7 @@ export function safeDownloadUrl(input: string): URL {
 type Attempt = { route: string; workspaceHeader: boolean; reason: string };
 type Variant = { label: string; path: string; direct: boolean };
 
-function variantsFor(ref: AssetReference, opts: { conversationId?: string; projectId?: string }): Variant[] {
+function variantsFor(ref: AssetReference, opts: { conversationId?: string; projectId?: string; projectFiles?: unknown[] }): Variant[] {
   if (ref.kind === 'sandbox') {
     const base = `/backend-api/conversation/${encodeURIComponent(opts.conversationId ?? '')}`;
     const query = new URLSearchParams({ message_id: ref.messageId ?? '', sandbox_path: ref.sandboxPath ?? '' });
@@ -34,11 +34,20 @@ function variantsFor(ref: AssetReference, opts: { conversationId?: string; proje
     ];
   }
   const id = encodeURIComponent(ref.id);
-  if (opts.projectId) {
+  // Explicit Project attachments are identified by the Project file list.
+  // A conversation which belongs to a Project also has a projectId; it must
+  // still use conversation-scoped retrieval instead of this Project-only path.
+  if (opts.projectId && opts.projectFiles !== undefined) {
     const project = encodeURIComponent(opts.projectId);
+    const live = new URLSearchParams({
+      gizmo_id: opts.projectId,
+      download_intent: 'true',
+      inline: 'false',
+    });
     return [
-      // Team/Business Project files require gizmo_id; an inline-only request
-      // is not interchangeable with the Project's own download route.
+      // Observed from a successful authenticated ChatGPT Project download.
+      // Response may be actual bytes OR JSON containing an estuary signed URL.
+      { label: 'project-intent', path: `/backend-api/files/download/${id}?${live}`, direct: true },
       { label: 'project-signed', path: `/backend-api/files/download/${id}?gizmo_id=${project}`, direct: false },
       { label: 'project-direct', path: `/backend-api/files/${id}/download?gizmo_id=${project}`, direct: true },
       { label: 'project-inline', path: `/backend-api/files/download/${id}?gizmo_id=${project}&inline=false`, direct: false },
@@ -46,7 +55,28 @@ function variantsFor(ref: AssetReference, opts: { conversationId?: string; proje
     ];
   }
   const conversation = encodeURIComponent(opts.conversationId ?? '');
+  const combined = opts.projectId
+    ? [
+      {
+        label: 'conversation-project-context-scoped',
+        path: `/backend-api/files/download/${id}?${new URLSearchParams({
+          check_context_scopes_for_conversation_id: opts.conversationId ?? '',
+          download_intent: 'true', gizmo_id: opts.projectId,
+        })}`,
+        direct: true,
+      },
+      {
+        label: 'conversation-project-simple',
+        path: `/backend-api/files/${id}/simple?${new URLSearchParams({
+          conversation_id: opts.conversationId ?? '', gizmo_id: opts.projectId,
+        })}`,
+        direct: true,
+      },
+    ] : [];
   return [
+    // Two additional routes observed from a successful ChatGPT conversation
+    // within a Project: /files/{id}/simple and download with both context IDs.
+    ...combined,
     // Current (2026) ChatGPT attachment workflow scopes access by the
     // conversation and explicitly declares the intent to download.
     // Treat the response as bytes OR a signed-link descriptor.
@@ -61,8 +91,13 @@ function variantsFor(ref: AssetReference, opts: { conversationId?: string; proje
 
 const urlFrom = (value: unknown): string | undefined => {
   const object = record(value);
-  return str(object.download_url) ?? str(object.signed_url) ??
-    str(object.presigned_url) ?? str(object.file_url) ?? str(object.url);
+  const candidates = [object, record(object.data), record(object.file), record(object.download)];
+  for (const source of candidates) {
+    const url = str(source.download_url) ?? str(source.signed_url) ??
+      str(source.presigned_url) ?? str(source.file_url) ?? str(source.url);
+    if (url) return url;
+  }
+  return undefined;
 };
 const responseReason = (value: unknown): string => {
   const object = record(value);

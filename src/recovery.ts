@@ -81,7 +81,8 @@ function categorize(reason: string): keyof ArchiveOverview['blockers'] {
 const ALLOWED_ROUTES = new Set([
   'sandbox-interpreter', 'sandbox-v2', 'sandbox-legacy',
   'conversation-context-scoped', 'conversation-signed', 'conversation-short',
-  'conversation-direct', 'project-signed', 'project-direct', 'project-inline', 'project-file',
+  'conversation-direct', 'conversation-project-context-scoped', 'conversation-project-simple',
+  'project-intent', 'project-signed', 'project-direct', 'project-inline', 'project-file',
 ]);
 
 function sanitizeAttemptResult(reason: unknown): string {
@@ -268,7 +269,9 @@ export async function recoverMissingAssets(
         const source = await archive.read<unknown>(marker.raw.path);
         if (source !== undefined) {
           const assets = await saveAssets(api, archive, workspace, root, source, {
-            conversationId: ownerId, existing: marker.files, existingMissing: marker.missing,
+            conversationId: ownerId,
+            projectId: (await archive.read<Inventory>(`${base}/inventory.json`))?.conversations.find(chat => chat.id === ownerId)?.projectId,
+            existing: marker.files, existingMissing: marker.missing,
             onlyIds: ids, onProgress,
           });
           await archive.json(`${root}/complete.json`, {
