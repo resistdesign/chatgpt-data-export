@@ -198,7 +198,7 @@ export async function archiveDiagnosticText(output: string): Promise<string> {
     'Missing-record categories:', ...(categories.length ? categories : ['  none']),
     'Failed route attempts (not unique files):', ...(routes.length ? routes : ['  no route attempts recorded']),
     'Counts are from local checkpoint metadata, not a network or hash verification.',
-  ].join('\\n');
+  ].join('\n');
 }
 
 /**
