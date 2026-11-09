@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['22', '24']
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
@@ -19,6 +19,11 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: corepack enable
       - run: yarn install
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == '22'
+        with:
+          name: generated-yarn-lock
+          path: yarn.lock
       - run: yarn typecheck
       - run: yarn test
       - name: Confirm packaged desktop assets exist
