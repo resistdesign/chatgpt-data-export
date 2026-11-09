@@ -47,10 +47,14 @@ function render(state: UiState): void {
   el('output').title = state.output;
   text('stage', state.status);
   const progress = state.progress;
-  text('counter', progress?.total ? `${progress.done.toLocaleString()}/${progress.total.toLocaleString()}` : state.running ? 'Working…' : '—');
+  text('counter', progress?.total
+    ? `${progress.done.toLocaleString()}/${progress.total.toLocaleString()}${progress.stage === 'Capturing' ? ' complete' : ' processed'}`
+    : state.running ? 'Working…' : '—');
   (el('progress-bar') as HTMLElement).style.width = progress?.total ? `${Math.max(0, Math.min(100, 100 * progress.done / progress.total))}%` : '0%';
   text('detail', progress ? [progress.stage, progress.note].filter(Boolean).join(' · ') : 'No export running');
-  text('elapsed', progress ? `${duration(progress.seconds)} · ${progress.etaSeconds === null ? 'ETA pending' : duration(progress.etaSeconds) + ' remaining'}` : '—');
+  text('elapsed', progress
+    ? `${duration(progress.seconds)} · ${state.running ? (progress.etaSeconds === null ? 'ETA pending' : duration(progress.etaSeconds) + ' remaining') : (state.error ? 'interrupted' : 'finished')}`
+    : '—');
   text('summary', state.error ?? state.result ?? (state.running ? 'Archive operation in progress…' : 'No archive result yet.'));
   el('summary').classList.toggle('error', Boolean(state.error));
   for (const id of ['export-all','test-25']) (el(id) as HTMLButtonElement).disabled = state.running || !state.signedIn;
