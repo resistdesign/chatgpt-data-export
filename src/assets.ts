@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
-import { ApiError, RateLimitExhausted, type ChatGptBrowser } from './browser.js';
+import { ApiError, RateLimitExhausted } from './errors.js';
+import type { ChatGptApi } from './api-types.js';
 import { Archive, safeId, type SavedFile } from './archive.js';
 import { collectAssets, record, str, type AssetReference, type Workspace } from './discovery.js';
 
@@ -46,7 +47,7 @@ export function assetReferences(source: unknown, projectFiles?: unknown[]): Asse
 }
 
 export async function saveAssets(
-  api: ChatGptBrowser,
+  api: ChatGptApi,
   archive: Archive,
   workspace: Workspace,
   root: string,

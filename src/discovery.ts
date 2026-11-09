@@ -1,5 +1,6 @@
 import { safeId, sha256, workspaceKey } from './archive.js';
-import { ApiError, type ChatGptBrowser } from './browser.js';
+import { ApiError } from './errors.js';
+import type { ChatGptApi } from './api-types.js';
 import type { Progress } from './progress.js';
 
 export interface Workspace { id: string; label: string; key: string; kind: string }
@@ -22,7 +23,7 @@ const cursor = (v: unknown): string | null => typeof v === 'string' || typeof v 
 const query = (args: Record<string, string>): string => new URLSearchParams(args).toString();
 const isMissing = (e: unknown): boolean => e instanceof ApiError && [403, 404, 405].includes(e.status);
 
-export async function discoverWorkspaces(api: ChatGptBrowser): Promise<Workspace[]> {
+export async function discoverWorkspaces(api: ChatGptApi): Promise<Workspace[]> {
   const raw = record(await api.get('/backend-api/accounts/check/v4-2023-04-27'));
   const accounts = record(raw.accounts);
   const byId = new Map<string, Workspace>();
@@ -42,7 +43,7 @@ export async function discoverWorkspaces(api: ChatGptBrowser): Promise<Workspace
   return [...byId.values()];
 }
 
-export async function buildInventory(api: ChatGptBrowser, scope: Workspace, progress: Progress): Promise<Inventory> {
+export async function buildInventory(api: ChatGptApi, scope: Workspace, progress: Progress): Promise<Inventory> {
   const conversations = new Map<string, ConversationListing>();
   const projects: ProjectListing[] = [];
   const shared: unknown[] = [];
@@ -132,7 +133,7 @@ export async function buildInventory(api: ChatGptBrowser, scope: Workspace, prog
   return { schema: 1, generatedAt: new Date().toISOString(), conversations: [...conversations.values()].sort((a, b) => a.id.localeCompare(b.id)), projects, shared, warnings, scopes };
 }
 
-export async function readDetail(api: ChatGptBrowser, scope: Workspace, id: string): Promise<unknown> {
+export async function readDetail(api: ChatGptApi, scope: Workspace, id: string): Promise<unknown> {
   safeId(id);
   try {
     const first = record(await api.get(`/backend-api/conversations/${id}?include_has_versions=true&num_turns=100`, scope.id));

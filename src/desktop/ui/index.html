@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChatGPT Data Export</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="module" defer src="../renderer.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">↗</span><span>RESIST DESIGN <span class="brand-sub">/ DATA TOOLS</span></span></div>
+      <div class="right-top"><span class="local-dot"></span> LOCAL FIRST <span class="version">0.2.0</span></div>
+    </header>
+    <main>
+      <div class="hero">
+        <div class="eyebrow">YOUR HISTORY. YOUR FILES. YOUR MACHINE.</div>
+        <h1>ChatGPT <em>Data Export</em></h1>
+        <p>Back up accessible ChatGPT data with resumable downloads, transparent coverage reports, and file-by-file verification.</p>
+      </div>
+      <section class="session card" aria-labelledby="account-title">
+        <div class="section-head"><div class="number">01</div><div><h2 id="account-title">Connection</h2><p>Sign in once. The app remembers your ChatGPT session between launches.</p></div><span id="connection-state" class="pill muted">Checking</span></div>
+        <div class="action-row"><button id="sign-in" class="button secondary">Open ChatGPT sign-in</button><button id="check-session" class="button outline">Check connection</button><button id="close-sign-in" class="button text-button">Close sign-in window</button></div>
+        <p class="fine-print">The sign-in browser belongs to this app, not your normal Chrome. No Chrome extension, remote debugging, or browser setting changes.</p>
+      </section>
+      <section class="archive card" aria-labelledby="archive-title">
+        <div class="section-head"><div class="number">02</div><div><h2 id="archive-title">Archive</h2><p>Files are written incrementally. Restarting reuses verified checkpoints.</p></div></div>
+        <div class="destination"><div><div class="small-label">SAVE DATA TO</div><div id="output" class="path">Loading…</div></div><button id="choose-output" class="button outline small">Change folder</button></div>
+        <div class="action-row main-actions"><button id="export-all" class="button primary">Export everything available <span>→</span></button><button id="test-25" class="button secondary">Test 25 chats</button><button id="stop" class="button danger" disabled>Stop safely</button></div>
+        <div class="progress-panel" aria-live="polite">
+          <div class="progress-heading"><strong id="stage">Ready</strong><span id="counter">—</span></div>
+          <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+          <div class="progress-details"><span id="detail">No export running</span><span id="elapsed">—</span></div>
+        </div>
+      </section>
+      <section class="integrity card" aria-labelledby="verify-title">
+        <div class="section-head"><div class="number">03</div><div><h2 id="verify-title">Verify & inspect</h2><p>Check the hashes of saved files without contacting ChatGPT.</p></div></div>
+        <div class="action-row"><button id="verify" class="button secondary">Verify archive</button><button id="open-output" class="button outline">Open export folder</button></div>
+        <p id="summary" class="summary">No archive result yet.</p>
+      </section>
+      <section class="activity" aria-labelledby="activity-title">
+        <div class="activity-top"><h2 id="activity-title">Activity</h2><span id="activity-count" class="muted-text">0 updates</span></div>
+        <div id="log" class="log" role="log" aria-live="polite"><div class="muted-text">Activity appears here as the exporter runs.</div></div>
+      </section>
+      <div class="footer">COVERAGE IS REPORTED, NOT ASSUMED. CHECK <code>report.json</code> FOR MISSING OR INACCESSIBLE DATA.</div>
+    </main>
+  </div>
+</body>
+</html>

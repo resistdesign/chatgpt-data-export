@@ -11,3 +11,9 @@ ChatGPT-Data-Export/
 exports/
 .local-state/
 chrome-profile/
+
+# Sensitive local archives and Electron profiles must never enter git
+ChatGPT-Data-Export/
+*.part
+.idea/
+.DS_Store

@@ -1,53 +1,17 @@
-#!/usr/bin/env node
-import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import { Archive, type CompletionMarker, type SavedFile } from './archive.js';
-import { ChatGptBrowser, ApiError, RateLimitExhausted } from './browser.js';
+import { ApiError, RateLimitExhausted } from './errors.js';
+import type { ChatGptApi } from './api-types.js';
 import { saveAssets } from './assets.js';
 import { buildInventory, discoverWorkspaces, readDetail, record, array, str, type Inventory, type Workspace } from './discovery.js';
-import { Progress } from './progress.js';
+import type { Progress } from './progress.js';
 
-interface Options { command: 'export' | 'verify'; output: string; profile: string; concurrency: number; delay: number; max: number | undefined; assets: boolean; refresh: boolean }
-const usage = `ChatGPT Data Export v0.1.0
-
-Usage:
-  yarn start [export] [--output PATH] [--concurrency 2] [--delay 750]
-  yarn start verify [--output PATH]
-
-Options:
-  --max-conversations N    Small test export (not a complete backup)
-  --refresh-inventory     Re-enumerate all conversations and Projects
-  --no-assets             Only save conversation data (not a complete backup)
-  --profile PATH          Dedicated Google Chrome login profile
-  --help                  Show help
-
-Accesses ChatGPT using your own logged-in Chrome window. Never asks for or stores
-an API key, password or pasted session token. All files are written locally.
-`;
-function args(argv: string[]): Options {
-  const base = { command: 'export' as const, output: join(homedir(), 'ChatGPT-Data-Export'), profile: join(homedir(), '.config', 'chatgpt-data-export', 'chrome-profile'), concurrency: 2, delay: 750, max: undefined as number | undefined, assets: true, refresh: false };
-  const options: Options = { ...base };
-  let at = 0;
-  if (argv[0] === 'verify' || argv[0] === 'export') { options.command = argv[0]; at++; }
-  for (; at < argv.length; at++) {
-    const key = argv[at];
-    if (key === '--help' || key === '-h') { process.stdout.write(usage); process.exit(0); }
-    if (key === '--no-assets') { options.assets = false; continue; }
-    if (key === '--refresh-inventory') { options.refresh = true; continue; }
-    const value = argv[++at];
-    if (!value) throw new Error(`Missing value for ${key}`);
-    if (key === '--output') options.output = resolve(value);
-    else if (key === '--profile') options.profile = resolve(value);
-    else if (key === '--concurrency') options.concurrency = Number(value);
-    else if (key === '--delay') options.delay = Number(value);
-    else if (key === '--max-conversations') options.max = Number(value);
-    else throw new Error(`Unknown option ${key}`);
-  }
-  if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 4) throw new Error('Concurrency must be 1-4');
-  if (!Number.isInteger(options.delay) || options.delay < 250 || options.delay > 60_000) throw new Error('Delay must be 250-60000 ms');
-  if (options.max !== undefined && (!Number.isInteger(options.max) || options.max < 1)) throw new Error('--max-conversations must be a positive integer');
-  return options;
+export interface ExportOptions {
+  output: string;
+  concurrency: number;
+  max: number | undefined;
+  assets: boolean;
+  refresh: boolean;
 }
 
 const optionalPaths: Record<string, string> = {
@@ -58,7 +22,7 @@ const optionalPaths: Record<string, string> = {
   library: '/backend-api/files/library',
 };
 
-async function captureAccount(api: ChatGptBrowser, archive: Archive, workspace: Workspace, progress: Progress): Promise<Record<string, string>> {
+async function captureAccount(api: ChatGptApi, archive: Archive, workspace: Workspace, progress: Progress): Promise<Record<string, string>> {
   const root = `workspaces/${workspace.key}`;
   const result: Record<string, string> = {};
   const savedFiles: SavedFile[] = [];
@@ -97,7 +61,7 @@ async function captureAccount(api: ChatGptBrowser, archive: Archive, workspace: 
   return result;
 }
 
-async function exportWorkspace(api: ChatGptBrowser, archive: Archive, workspace: Workspace, progress: Progress, options: Options, cancelled: () => boolean): Promise<Record<string, unknown>> {
+export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspace: Workspace, progress: Progress, options: ExportOptions, cancelled: () => boolean): Promise<Record<string, unknown>> {
   const root = `workspaces/${workspace.key}`;
   const previous = options.refresh ? undefined : await archive.read<Inventory>(`${root}/inventory.json`);
   const inventory = previous?.schema === 1 && previous.scopes.main === 'complete' && previous.scopes.archived === 'complete'
@@ -191,44 +155,51 @@ async function exportWorkspace(api: ChatGptBrowser, archive: Archive, workspace:
   return report;
 }
 
-async function main(): Promise<void> {
-  const options = args(process.argv.slice(2));
-  const archive = new Archive(options.output);
-  if (options.command === 'verify') {
-    const summary = await archive.read<{ workspaces?: Array<{ key: string }> }>('report.json');
-    const keys = summary?.workspaces?.map(w => w.key)
-      ?? (await readdir(archive.path('workspaces'), { withFileTypes: true })).filter(x => x.isDirectory()).map(x => x.name);
-    if (!keys.length) throw new Error('No workspace archives found. Run export first.');
-    let bad = false;
-    for (const key of keys) {
-      const workspace = { key };
-      const result = await archive.verifyWorkspace(workspace.key);
-      process.stdout.write(`${workspace.key}: ${result.complete} verified, ${result.partial} partial, ${result.failed.length} conversations missing/corrupt, ${result.otherMissing.length} account/Project files missing/corrupt of ${result.expected} conversations\n`);
-      if (result.partial || result.failed.length || result.otherMissing.length) bad = true;
-    }
-    if (bad) process.exitCode = 2;
-    return;
-  }
-  const progress = new Progress();
-  const api = new ChatGptBrowser(options.profile, options.delay, progress);
-  let cancelled = false;
-  process.on('SIGINT', () => { cancelled = true; api.cancel(); progress.info('Cancellation requested. Retaining verified local checkpoints.'); });
-  progress.start();
-  try {
-    await api.open();
-    const workspaces = await discoverWorkspaces(api);
-    progress.info(`Discovered ${workspaces.length} workspace(s): ${workspaces.map(w => w.label).join(', ')}`);
-    const reports: Record<string, unknown>[] = [];
-    for (const workspace of workspaces) {
-      if (cancelled) break;
-      reports.push(await exportWorkspace(api, archive, workspace, progress, options, () => cancelled));
-    }
-    const report = { schema: 1, at: new Date().toISOString(), output: options.output,
-      status: cancelled ? 'cancelled' : reports.every(x => x.status === 'complete') && reports.length === workspaces.length ? 'complete' : 'partial',
-      workspaces: reports.map(r => r.workspace), reports };
-    await archive.json('report.json', report);
-    progress.info(`Archive ${report.status}: ${options.output}\nOpen report.json for coverage and missing-data details.`);
-    if (report.status !== 'complete') process.exitCode = 2;
-  } finally { progress.stop(); await api.close(); }
+
+export interface ArchiveReport {
+  schema: 1;
+  at: string;
+  output: string;
+  status: 'complete' | 'partial' | 'cancelled';
+  workspaces: unknown[];
+  reports: Record<string, unknown>[];
 }
-main().catch(error => { console.error(`\nExport interrupted: ${error instanceof Error ? error.message : String(error)}\nCompleted conversation files remain on disk. Rerun with the same --output to resume.`); process.exitCode = 1; });
+
+export async function exportAll(api: ChatGptApi, options: ExportOptions, progress: Progress, cancelled: () => boolean): Promise<ArchiveReport> {
+  const archive = new Archive(options.output);
+  const workspaces = await discoverWorkspaces(api);
+  progress.info(`Discovered ${workspaces.length} workspace(s): ${workspaces.map(w => w.label).join(', ')}`);
+  const reports: Record<string, unknown>[] = [];
+  for (const workspace of workspaces) {
+    if (cancelled()) break;
+    reports.push(await exportWorkspace(api, archive, workspace, progress, options, cancelled));
+  }
+  const report: ArchiveReport = {
+    schema: 1, at: new Date().toISOString(), output: options.output,
+    status: cancelled() ? 'cancelled' : reports.every(x => x.status === 'complete') && reports.length === workspaces.length ? 'complete' : 'partial',
+    workspaces: reports.map(r => r.workspace), reports,
+  };
+  await archive.json('report.json', report);
+  progress.info(`Archive ${report.status}: ${options.output}. Read report.json for coverage and missing data.`);
+  return report;
+}
+
+export interface VerificationResult {
+  key: string;
+  expected: number;
+  complete: number;
+  partial: number;
+  failed: string[];
+  otherMissing: string[];
+}
+
+export async function verifyArchive(output: string): Promise<VerificationResult[]> {
+  const archive = new Archive(output);
+  const summary = await archive.read<{ workspaces?: Array<{ key: string }> }>('report.json');
+  const keys = summary?.workspaces?.map(w => w.key)
+    ?? (await readdir(archive.path('workspaces'), { withFileTypes: true })).filter(x => x.isDirectory()).map(x => x.name);
+  if (!keys.length) throw new Error('No workspace archives found. Export data first.');
+  const results: VerificationResult[] = [];
+  for (const key of keys) results.push({ key, ...(await archive.verifyWorkspace(key)) });
+  return results;
+}
