@@ -8,7 +8,7 @@ import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
 import { SessionExpiredError, SessionCheckError, ExportCancelledError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
 import { inspectArchive, archiveDiagnosticText, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
-import { summarizeFileRequest, formatObservedRequests, type ObservedFileRequest } from './request-observer.js';
+import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames, type ObservedFileRequest } from './request-observer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PARTITION = 'persist:chatgpt-data-export';
@@ -40,6 +40,8 @@ let dashboard: BrowserWindow | null = null;
 let signInWindow: BrowserWindow | null = null;
 let current: { api: ElectronSessionClient; cancelled: boolean } | null = null;
 let quitRequested = false;
+/** Only header NAMES. Never preserve header values. */
+const observedHeaderNames = new Map<number, string[]>();
 
 function broadcast(): void {
   if (dashboard && !dashboard.isDestroyed()) dashboard.webContents.send('export:state', structuredClone(state));
@@ -111,7 +113,10 @@ async function authenticate(): Promise<boolean> {
  */
 function stopFileObservation(): void {
   if (!state.fileObservation.active) return;
-  session.fromPartition(PARTITION).webRequest.onCompleted(null);
+  const observer = session.fromPartition(PARTITION).webRequest;
+  observer.onCompleted(null);
+  observer.onBeforeSendHeaders(null);
+  observedHeaderNames.clear();
   state.fileObservation.active = false;
   event(`Download observation stopped: ${state.fileObservation.requests.length} sanitized file API responses.`);
 }
@@ -123,11 +128,25 @@ function toggleFileObservation(): void {
   }
   state.fileObservation = { active: true, requests: [] };
   const filter = { urls: ['https://chatgpt.com/backend-api/*'] };
-  session.fromPartition(PARTITION).webRequest.onCompleted(filter, details => {
+  const network = session.fromPartition(PARTITION).webRequest;
+  observedHeaderNames.clear();
+  network.onBeforeSendHeaders(filter, (details, callback) => {
+    const signIn = signInWindow;
+    if (state.fileObservation.active && signIn && !signIn.isDestroyed() &&
+      details.webContentsId === signIn.webContents.id) {
+      // Copy only allowlisted header names, NEVER values.
+      const names = safeRequestHeaderNames(details.requestHeaders);
+      if (names.length) observedHeaderNames.set(details.id, names);
+    }
+    callback({ requestHeaders: details.requestHeaders });
+  });
+  network.onCompleted(filter, details => {
+    const names = observedHeaderNames.get(details.id) ?? [];
+    observedHeaderNames.delete(details.id);
     const signIn = signInWindow;
     if (!state.fileObservation.active || !signIn || signIn.isDestroyed() ||
       details.webContentsId !== signIn.webContents.id) return;
-    const item = summarizeFileRequest(details.url, details.statusCode, details.method);
+    const item = summarizeFileRequest(details.url, details.statusCode, details.method, names);
     if (!item) return;
     state.fileObservation.requests = [...state.fileObservation.requests, item].slice(-30);
     broadcast();
@@ -308,7 +327,7 @@ async function initialize(): Promise<void> {
       ? '\n\nObserved real ChatGPT file API responses (no URLs or values):\n' + formatObservedRequests(observed).join('\n')
       : '';
     clipboard.writeText(diagnostic + observedSection);
-    event('Safe diagnostics copied: aggregate archive failures and any observed file API route shapes; no identifiers or credentials.');
+    event('Safe diagnostics copied: archive failures, observed route shapes, boolean flags, and header names only.');
     return true;
   });
   ipcMain.handle('app:observe-file', e => {

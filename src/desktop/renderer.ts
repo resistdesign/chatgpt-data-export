@@ -28,6 +28,8 @@ interface UiState {
     requests: Array<{
       route: string; method: 'GET' | 'POST' | 'other';
       queryKeys: string[]; otherQueryKeys: number; status: string;
+      booleans?: { inline?: boolean; download_intent?: boolean };
+      headerNames?: string[];
     }>;
   };
 }
