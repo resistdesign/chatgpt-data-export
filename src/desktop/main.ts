@@ -1,0 +1,201 @@
+import { app, BrowserWindow, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from 'electron';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { ElectronSessionClient } from '../electron-client.js';
+import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
+import { Progress, type ProgressSnapshot } from '../progress.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const PARTITION = 'persist:chatgpt-data-export';
+const CHATGPT = 'https://chatgpt.com/';
+
+interface UiState {
+  signedIn: boolean;
+  output: string;
+  running: boolean;
+  activity: 'idle' | 'exporting' | 'verifying';
+  status: string;
+  error: string | null;
+  progress: ProgressSnapshot | null;
+  result: string | null;
+  events: string[];
+}
+
+const state: UiState = {
+  signedIn: false, output: join(homedir(), 'ChatGPT-Data-Export'), running: false,
+  activity: 'idle', status: 'Ready to connect', error: null, progress: null, result: null, events: [],
+};
+let dashboard: BrowserWindow | null = null;
+let signInWindow: BrowserWindow | null = null;
+let current: { api: ElectronSessionClient; cancelled: boolean } | null = null;
+let quitRequested = false;
+
+function broadcast(): void {
+  if (dashboard && !dashboard.isDestroyed()) dashboard.webContents.send('export:state', structuredClone(state));
+}
+function event(message: string): void {
+  state.events = [...state.events, `${new Date().toLocaleTimeString()}  ${message}`].slice(-100);
+  broadcast();
+}
+function description(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function ensureDashboard(e: IpcMainInvokeEvent): void {
+  if (!dashboard || e.sender !== dashboard.webContents || e.senderFrame?.url !== dashboard.webContents.getURL()) {
+    throw new Error('Untrusted dashboard IPC request');
+  }
+}
+function startJob(activity: UiState['activity'], status: string): void {
+  if (state.running) throw new Error('An archive operation is already running');
+  state.running = true;
+  state.activity = activity;
+  state.status = status;
+  state.error = null;
+  state.result = null;
+  state.progress = null;
+  broadcast();
+}
+function finishJob(): void {
+  current = null;
+  state.running = false;
+  state.activity = 'idle';
+  broadcast();
+  if (quitRequested) app.quit();
+}
+
+async function authenticate(): Promise<boolean> {
+  const client = new ElectronSessionClient(session.fromPartition(PARTITION));
+  state.signedIn = await client.authenticated();
+  broadcast();
+  return state.signedIn;
+}
+
+function isHttps(input: string): boolean {
+  try { return new URL(input).protocol === 'https:'; } catch { return false; }
+}
+function openSignIn(): void {
+  if (signInWindow && !signInWindow.isDestroyed()) { signInWindow.focus(); return; }
+  const win = new BrowserWindow({
+    title: 'Sign in to ChatGPT', width: 1040, height: 850, minWidth: 600, minHeight: 520,
+    show: true, backgroundColor: '#141821',
+    webPreferences: {
+      partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
+      webSecurity: true,
+    },
+  });
+  signInWindow = win;
+  win.webContents.on('will-navigate', (e, url) => { if (!isHttps(url)) e.preventDefault(); });
+  // OAuth sometimes opens separate windows. Child windows inherit the same persistent session
+  // but never acquire Node.js, a preload bridge, or access to local archive files.
+  win.webContents.setWindowOpenHandler(({ url }) => isHttps(url)
+    ? { action: 'allow', overrideBrowserWindowOptions: { width: 720, height: 790, webPreferences: { partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true, webSecurity: true } } }
+    : { action: 'deny' });
+  const refresh = (): void => { void authenticate().then(ok => { if (ok) event('Signed in to ChatGPT. This app will retain its session between launches.'); }); };
+  win.webContents.on('did-finish-load', refresh);
+  win.on('closed', () => { signInWindow = null; void authenticate(); });
+  void win.loadURL(CHATGPT).catch(err => { event(`Sign-in page failed to load: ${description(err)}`); });
+}
+
+async function saveSettings(): Promise<void> {
+  await mkdir(app.getPath('userData'), { recursive: true, mode: 0o700 });
+  await writeFile(join(app.getPath('userData'), 'settings.json'), JSON.stringify({ output: state.output }), { mode: 0o600 });
+}
+async function loadSettings(): Promise<void> {
+  try {
+    const raw = JSON.parse(await readFile(join(app.getPath('userData'), 'settings.json'), 'utf8')) as { output?: unknown };
+    if (typeof raw.output === 'string' && raw.output.trim()) state.output = resolve(raw.output);
+  } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') event('Could not read saved output preferences; using default.'); }
+}
+
+function createDashboard(): void {
+  dashboard = new BrowserWindow({
+    title: 'ChatGPT Data Export', width: 980, height: 820, minWidth: 740, minHeight: 630,
+    backgroundColor: '#101319',
+    webPreferences: {
+      preload: join(here, 'preload.cjs'), sandbox: true, contextIsolation: true,
+      nodeIntegration: false, webSecurity: true,
+    },
+  });
+  dashboard.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  dashboard.webContents.on('will-navigate', e => e.preventDefault());
+  dashboard.webContents.on('did-finish-load', broadcast);
+  dashboard.on('closed', () => { dashboard = null; });
+  void dashboard.loadFile(join(here, 'ui', 'index.html'));
+}
+
+async function runExport(limit: 25 | null): Promise<void> {
+  startJob('exporting', limit === null ? 'Exporting everything available' : 'Testing with 25 conversations per workspace');
+  const progress = new Progress(snapshot => { state.progress = snapshot; if (snapshot.message) event(snapshot.message); else broadcast(); }, false);
+  const client = new ElectronSessionClient(session.fromPartition(PARTITION), 750, progress);
+  const job = { api: client, cancelled: false };
+  current = job;
+  progress.start();
+  try {
+    if (!await client.authenticated()) throw new Error('ChatGPT sign-in is required. Use the Sign in button, then try again.');
+    const options: ExportOptions = { output: state.output, concurrency: 2, max: limit === null ? undefined : limit, assets: true, refresh: limit === null };
+    const report = await exportAll(client, options, progress, () => job.cancelled);
+    state.status = report.status === 'complete' ? 'Export completed' : report.status === 'cancelled' ? 'Export stopped' : 'Export finished with incomplete coverage';
+    state.result = `Export ${report.status}. Review report.json before treating the archive as complete.`;
+    event(state.result);
+  } catch (err) {
+    state.status = job.cancelled ? 'Export stopped; checkpoints retained' : 'Export interrupted';
+    state.error = description(err);
+    event(`Export stopped: ${description(err)}. Rerun to resume from saved checkpoints.`);
+  } finally { progress.stop(); finishJob(); }
+}
+
+async function runVerify(): Promise<void> {
+  startJob('verifying', 'Verifying stored data');
+  try {
+    const results = await verifyArchive(state.output);
+    const issues = results.reduce((n, item) => n + item.partial + item.failed.length + item.otherMissing.length, 0);
+    state.status = issues ? 'Verification found missing or partial data' : 'All inventoried files verified';
+    state.result = `${results.reduce((n, item) => n + item.complete, 0)} conversations verified. ${issues} partial, missing or corrupt entries across ${results.length} workspace(s).`;
+    event(state.result);
+  } catch (err) { state.status = 'Verification failed'; state.error = description(err); event(`Verification error: ${description(err)}`); }
+  finally { finishJob(); }
+}
+
+async function initialize(): Promise<void> {
+  app.setName('ChatGPT Data Export');
+  await app.whenReady();
+  const signedInSession = session.fromPartition(PARTITION);
+  signedInSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  await loadSettings();
+  ipcMain.handle('app:state', e => { ensureDashboard(e); return structuredClone(state); });
+  ipcMain.handle('app:sign-in', e => { ensureDashboard(e); openSignIn(); return true; });
+  ipcMain.handle('app:check-session', async e => { ensureDashboard(e); return authenticate(); });
+  ipcMain.handle('app:choose-output', async e => {
+    ensureDashboard(e);
+    if (state.running) return state.output;
+    const result = await dialog.showOpenDialog(dashboard!, { title: 'Choose an export directory', defaultPath: state.output, properties: ['openDirectory', 'createDirectory'] });
+    if (!result.canceled && result.filePaths[0]) { state.output = resolve(result.filePaths[0]); await saveSettings(); broadcast(); }
+    return state.output;
+  });
+  ipcMain.handle('app:start', (e, limit: unknown) => {
+    ensureDashboard(e);
+    if (limit !== null && limit !== 25) throw new Error('Invalid export mode');
+    if (state.running) throw new Error('An archive operation is already running');
+    void runExport(limit);
+    return true;
+  });
+  ipcMain.handle('app:verify', e => { ensureDashboard(e); if (state.running) throw new Error('Archive is busy'); void runVerify(); return true; });
+  ipcMain.handle('app:stop', e => { ensureDashboard(e); if (current && state.running) { current.cancelled = true; current.api.cancel(); state.status = 'Stopping after current safe checkpoint'; event('Stop requested. Already saved files are retained.'); } return true; });
+  ipcMain.handle('app:open-output', async e => { ensureDashboard(e); await mkdir(state.output, { recursive: true }); const message = await shell.openPath(state.output); if (message) throw new Error(message); return true; });
+  ipcMain.handle('app:close-sign-in', e => { ensureDashboard(e); signInWindow?.close(); return true; });
+  createDashboard();
+  await authenticate();
+}
+
+app.on('before-quit', e => {
+  if (state.running && !quitRequested) {
+    e.preventDefault();
+    quitRequested = true;
+    if (current) { current.cancelled = true; current.api.cancel(); }
+    state.status = 'Stopping export safely before exiting';
+    broadcast();
+  }
+});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('activate', () => { if (!dashboard) createDashboard(); });
+void initialize().catch(err => { console.error('ChatGPT Data Export could not start:', err); app.quit(); });

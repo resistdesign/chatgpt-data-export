@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError, type ChatGptBrowser } from './browser.js';
+import { ApiError } from './errors.js';
+import type { ChatGptApi } from './api-types.js';
 import { buildInventory, discoverWorkspaces, readDetail } from './discovery.js';
 import { Progress } from './progress.js';
 
-const mock = (handler: (path: string) => unknown | Promise<unknown>): ChatGptBrowser => ({
+const mock = (handler: (path: string) => unknown | Promise<unknown>): ChatGptApi => ({
   get: async (path: string) => handler(path),
-}) as unknown as ChatGptBrowser;
+}) as unknown as ChatGptApi;
 const workspace = { id: 'account-1', key: 'workspace', label: 'Personal', kind: 'personal' };
 
 test('workspace discovery requires real account records', async () => {

@@ -1,101 +1,93 @@
 # ChatGPT Data Export
 
-**Local-first, crash-resumable ChatGPT archive tool.** Node.js + TypeScript, licensed MIT by Resist Design.
+A **local-first Electron desktop app** for exporting accessible ChatGPT data. Built with Node.js + TypeScript, licensed MIT by Resist Design.
 
-This project exists because a backup that silently stops, restarts from zero, or calls missing data "complete" is not a backup.
+The goal is a first-class backup experience: sign in once, save data locally, follow real progress, stop safely, resume, and verify what was actually saved. No Chrome extension, remote debugging, second Chrome instance, pasted bearer tokens, or reliance on OpenAI's email export.
 
-## Get started (macOS, Windows or Linux)
+> **v0.2.0 is an early development build.** The code and synthetic tests compile; the ChatGPT sign-in flow and private endpoints have **not been validated against a real signed-in Electron session**. Some SSO providers refuse embedded browsers. Run the small test first. Do not assume every account artifact is accessible.
 
-Requires Node.js **20.19+**, Yarn, and a locally installed **Google Chrome** browser.
+## Run it on your Mac
+
+Requires Node.js **22.12+**, Yarn, internet access, and macOS, Windows, or Linux with a graphical desktop. No preinstalled Chrome is needed.
 
 ```bash
 git clone https://github.com/resistdesign/chatgpt-data-export.git
 cd chatgpt-data-export
 yarn install
-yarn build
 yarn start
 ```
 
-The CLI opens a **dedicated Chrome profile**. Sign in to ChatGPT there, then press Enter in your terminal. Subsequent runs reuse this profile. No API key or pasted session token is required. The session's short-lived access token stays in process memory; the Chrome profile does contain login cookies and must be protected like a password.
+If you're testing an open PR, check out its feature branch before `yarn install`.
 
-By default, archives are written to `~/ChatGPT-Data-Export` (an ordinary local directory, not automatically Google Drive). To choose another location:
+1. Click **Open ChatGPT sign-in**. An embedded Chromium window opens. Sign into your own ChatGPT account there, including any MFA. Close the sign-in window when you're done.
+2. Click **Check connection** to confirm that the application can read your authenticated session.
+3. Choose an ordinary **local folder** for the archive. Default: `~/ChatGPT-Data-Export`. Avoid a live cloud-synced folder during large backups.
+4. Click **Test 25 chats per workspace** first. Inspect the resulting reports. Then click **Export everything available** to resume from those verified files.
+5. Click **Verify archive** to re-hash saved data offline, and **Open export folder** to review your files.
 
-```bash
-yarn start --output ~/Backups/ChatGPT
-```
+The application keeps its own encrypted/session cookie store **as managed by Electron/Chromium**, separate from Chrome. The exact at-rest protections vary by OS. It reuses the same persistent `persist:chatgpt-data-export` session on later launches. You don't need to alter Chrome's settings, install an extension or authorize Chrome debugging. The short-lived access token is kept in memory and is not stored by our app.
 
-**Try a small run first** (intentionally incomplete):
+If ChatGPT or your identity provider refuses sign-in in an embedded Electron window, **the app will not bypass its restrictions**. The next step would be an officially supported authentication mechanism or a carefully reviewed separate adapter, not silently transferring Chrome cookies or bypassing account security.
 
-```bash
-yarn start --max-conversations 25
-```
+## What we export
 
-When ready, rerun without `--max-conversations`. Already verified conversations will be skipped:
+The existing checkpoint-based export engine remains unchanged in format and purpose:
 
-```bash
-yarn start
-```
+- Personal and Business workspaces discoverable from the signed-in account.
+- Main, archived, Project, and shared conversation listings.
+- Raw conversation records; paginated conversations retain all fetched source pages. Legacy full-graph endpoints preserve branches where available.
+- Project information and discoverable Project knowledge files.
+- Available uploaded and generated `file_*` assets, plus recognized sandbox downloads, with SHA-256 hashes.
+- Account data returned by accessible endpoints: legacy memories, settings, custom instructions, beta features, Library metadata and custom GPT listings.
 
-Use `Ctrl+C` for a graceful cancellation after the current request. Rerun the same command with the same output directory to resume. Local checkpoints are atomic: data is never marked complete before it is saved.
+**Important:** These are undocumented ChatGPT browser endpoints. Successful sign-in does not guarantee all data is retrievable. Improved memory, certain media formats, Library file bodies, standalone Space artifacts, scheduled tasks, and some custom GPT assets have **not been confirmed as fully exportable**. When an endpoint is denied, missing, or an asset fails, the exporter reports it instead of claiming success.
 
-## Commands
+## Reliability
 
-| Command | What it does |
-| --- | --- |
-| `yarn start` | Export all discoverable workspaces, conversations, Projects, and accessible account artifacts |
-| `yarn start verify` | Re-hash local conversation and attachment files; report missing/corrupted data |
-| `yarn start --refresh-inventory` | Refresh the remote inventory before resuming to find new conversations |
-| `yarn start --max-conversations 25` | Test with a limited set; report is **partial**, never complete |
-| `yarn start --no-assets` | Export conversation data without attachments; report is **partial** |
-| `yarn start --concurrency 1 --delay 1500` | Reduce API pressure if ChatGPT is rate-limiting |
-| `yarn test` | Build and run deterministic tests using synthetic data |
+- Every conversation has a `complete.json` marker, referencing SHA-256 checksums.
+- Files are written to temporary files and renamed into place after successful writes.
+- Unchanged, verified conversations are reused when the app restarts.
+- Individual missing attachments are retried on later runs.
+- Journal entries are append-only, not a giant file rewritten for every conversation.
+- Bounded concurrency, adaptive request pacing, and explicit rate-limit retries; extended 429s interrupt honestly rather than spinning forever.
+- A small test is **always** marked incomplete, not misrepresented as an entire account backup.
+- **Stop safely** cancels new work and retains saved checkpoints. If the app or system crashes, restart the app and use the same output folder to resume.
+- Independent verification: use **Verify archive** in the app, or `yarn verify /path/to/archive` from a terminal (no ChatGPT login required).
 
-## What it captures
-
-- Separate archives for accessible personal and Business workspaces
-- Main and archived conversation history, including Project conversations and shared conversation listings
-- Raw conversation data with message branches **when supplied by a full-graph endpoint**; when the modern API only serves paginated messages, every original page is saved without falsely claiming to recover omitted branches
-- Project details, instructions (if supplied by ChatGPT), and accessible project files
-- Discoverable uploaded and generated `file_*` attachments, saved as binary blobs with their hashes and original names recorded in `assets-index.json`
-- Account artifacts for which the currently available ChatGPT web endpoint responds: legacy memories, custom instructions, settings, beta features, Library metadata, and custom GPT discovery
-
-The tool requests data through the same authenticated browser-origin endpoints used by the ChatGPT web app. These are **undocumented** and may stop working or yield incomplete datasets. Account-level improved memory, scheduled tasks, some standalone Library objects, inaccessible files, and certain media formats have **not been verified** as fully retrievable. Every unavailable endpoint or missing file is reported, rather than declaring a full backup.
-
-## Archive layout
+### Files written
 
 ```text
 ~/ChatGPT-Data-Export/
-  report.json                            # honest overall status
+  report.json
   workspaces/<workspace-fingerprint>/
-    inventory.json                      # complete, reusable inventory snapshot
-    account/                            # account data, status and custom GPTs
-    projects/<project-id>/info.json     # raw project metadata
-    projects/<project-id>/assets/       # project files when accessible
+    inventory.json
+    account/                 # available metadata + per-endpoint status
+    projects/<project-id>/   # Project info + accessible assets
     conversations/<conversation-id>/
-      raw.json                          # unmodified provider data / source pages
-      complete.json                     # hashes, timestamps, missing files
-      assets-index.json                 # attachment availability and names
-      assets/<file-id>                  # original binary bytes
-    journal.jsonl                       # append-only events, no giant rewrites
-    report.json                         # scope coverage, failures, verification
+      raw.json                # provider source JSON or source pages
+      complete.json           # verified hash references, missing asset IDs
+      assets-index.json
+      assets/                 # binary files when available
+    journal.jsonl             # append-only progress trail
+    report.json              # scope counts, failures and integrity results
 ```
 
-The filenames use stable IDs so renaming a conversation does not break resume. Each completed file is written to a temporary `.part` file and renamed into place. A conversation is reused only when its raw SHA-256 checksum matches the completion marker and its source update timestamp is unchanged. Partial attachments are retried independently on subsequent runs. `verify` hashes the archive without contacting ChatGPT.
+The output folder and Electron session contain **highly private material**. Never commit them or share them publicly. Tokens are never written to logs intentionally, but raw conversation data may itself contain secrets that were mentioned in chats.
 
-**Important:** `report.status === "complete"` refers to *the available supported endpoints and requested scopes*, not a guarantee that every byte held by OpenAI is available to third-party software. Read the per-workspace `account/status.json`, `report.json` and missing-file entries.
+## Developer commands
 
-## Design and security
+| Command | Purpose |
+| --- | --- |
+| `yarn start` | Build and launch the Electron app |
+| `yarn build` | Compile TypeScript and stage desktop UI assets |
+| `yarn typecheck` | TypeScript compilation checks |
+| `yarn test` | Synthetic archive, discovery and Electron session tests |
+| `yarn verify /path/to/archive` | Verify locally saved data without opening the desktop app |
 
-- All exports are stored directly on your machine. No third-party archive or backend.
-- No browser extension and no pasted bearer token.
-- Uses a dedicated Chrome login profile, so it never reads your main Chrome profile or browser keychain.
-- Account tokens never enter the archive, journal, or logs. Chrome stores session cookies in the dedicated profile at `~/.config/chatgpt-data-export/chrome-profile`.
-- Limits endpoints to the ChatGPT web origin; signed asset downloads are HTTPS with constrained known OpenAI/CDN hosts and no bearer authorization header.
-- Adaptive pacing and bounded retries show status and cooldowns. HTTP 429 exhaustion interrupts honestly rather than spinning forever.
-- Do **not** commit or publish your archive or Chrome profile. Do not sync the profile into cloud backup services.
+The desktop app uses the Electron **main process** for networking and filesystem operations. Its untrusted ChatGPT login window is sandboxed, has `nodeIntegration: false`, and has **no preload bridge**. The application dashboard is a local page with a narrow allowlisted IPC bridge. The ChatGPT account session is persistent via Electron's `session.fromPartition('persist:chatgpt-data-export')`, and requests go through `Session.fetch`, using cookies in that session. No Chromium debugger is involved.
 
-## Known limitations in v0.1.0
+The archive engine (`src/exporter.ts`, `src/archive.ts`, `src/discovery.ts`, `src/assets.ts`) doesn't depend on Electron; it consumes an authenticated API interface. Installable Windows/macOS/Linux bundles, signing, notarization, and auto-updates are future milestones; this PR deliberately starts with a runnable developer build on your Mac.
 
-This is an **initial implementation, not yet validated against a live large ChatGPT account**. Synthetic tests cover the archive/checkpoint and URL safety pieces. Private endpoint responses, especially modern memory and media, still require real-world compatibility testing. Some API scopes may report `unavailable`, and large generated assets may not have a discoverable `file_*` pointer. HTTP 429 is expected on large Business archives; wait for the cooldown and resume rather than run multiple copies.
+## Project status and upstream inspiration
 
-This is an independent MIT project. Inspiration and endpoint research came from the documentation and code of [CodingCat AI Chat Exporter](https://github.com/nikolaylosev/ai-chat-exporter), [ChatGPT Markdown Export](https://github.com/thekester/chatgpt-export), and [ChatGPTExporter Community](https://github.com/Trojon99/ChatGPTExporter-Community). No source code is copied or required at runtime. Not affiliated with OpenAI.
+Version 0.2.0 is **not production certified**. The engine uses private APIs that can change at any time; check the account coverage reports. Source inspiration and endpoint research came from [CodingCat AI Chat Exporter](https://github.com/nikolaylosev/ai-chat-exporter), [ChatGPT Markdown Export](https://github.com/thekester/chatgpt-export) and [ChatGPTExporter Community](https://github.com/Trojon99/ChatGPTExporter-Community). No code from those projects was copied. This project isn't affiliated with OpenAI.

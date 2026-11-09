@@ -1,3 +1,14 @@
+export interface ProgressSnapshot {
+  stage: string;
+  done: number;
+  total: number;
+  seconds: number;
+  etaSeconds: number | null;
+  note: string;
+  message?: string;
+}
+
+/** The same status stream feeds both terminal users and the Electron dashboard. */
 export class Progress {
   private started = Date.now();
   private last = '';
@@ -7,21 +18,33 @@ export class Progress {
   private stage = 'Starting';
   private note = '';
 
+  constructor(private readonly onUpdate?: (state: ProgressSnapshot) => void, private readonly terminal = true) {}
+
   start(): void { this.timer = setInterval(() => this.render(), 1000); this.timer.unref(); }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = undefined; this.render(true); }
   set(stage: string, done?: number, total?: number, note?: string): void {
+    if (stage !== this.stage) { this.done = 0; this.total = 0; this.note = ''; }
     this.stage = stage;
     if (done !== undefined) this.done = done;
     if (total !== undefined) this.total = total;
     if (note !== undefined) this.note = note;
     this.render();
   }
-  info(message: string): void { this.clear(); process.stderr.write(`\n${message}\n`); this.last = ''; this.render(); }
-  private clear(): void { if (process.stderr.isTTY) process.stderr.write('\r\x1b[2K'); }
-  private render(final = false): void {
+  /** Update the visible note without erasing the real conversation counters. */
+  waiting(note: string): void { this.note = note; this.render(); }
+  info(message: string): void {
+    if (this.terminal) { this.clear(); process.stderr.write(`\n${message}\n`); this.last = ''; }
+    this.render(false, message);
+  }
+  private clear(): void { if (this.terminal && process.stderr.isTTY) process.stderr.write('\r\x1b[2K'); }
+  private render(final = false, message?: string): void {
     const seconds = Math.floor((Date.now() - this.started) / 1000);
     const rate = this.done > 0 && seconds > 0 ? this.done / seconds : 0;
-    const eta = rate > 0 && this.total > 0 ? `${Math.ceil((this.total - this.done) / rate)}s ETA` : 'ETA pending';
+    const etaSeconds = rate > 0 && this.total > 0 ? Math.ceil(Math.max(0, this.total - this.done) / rate) : null;
+    const state: ProgressSnapshot = { stage: this.stage, done: this.done, total: this.total, seconds, etaSeconds, note: this.note, ...(message ? { message } : {}) };
+    this.onUpdate?.(state);
+    if (!this.terminal) return;
+    const eta = etaSeconds === null ? 'ETA pending' : `${etaSeconds}s ETA`;
     const count = this.total ? `${this.done}/${this.total} (${(100 * this.done / this.total).toFixed(1)}%)` : `${this.done} processed`;
     const line = `${this.stage}: ${count} | ${seconds}s | ${eta}${this.note ? ` | ${this.note}` : ''}`;
     if (line === this.last && !final) return;

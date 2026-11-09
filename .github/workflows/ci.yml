@@ -9,14 +9,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['22', '24']
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
       - run: corepack enable
-      - run: yarn install
+      - run: yarn install --frozen-lockfile
       - run: yarn typecheck
       - run: yarn test
-      - run: yarn start --help
+      - name: Confirm packaged desktop assets exist
+        run: test -f dist/desktop/main.js && test -f dist/desktop/preload.cjs && test -f dist/desktop/ui/index.html && test -f dist/desktop/renderer.js
