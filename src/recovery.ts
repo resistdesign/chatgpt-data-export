@@ -219,7 +219,11 @@ export async function recoverMissingAssets(
   if (!initial.overview) throw new Error('No saved archive inventory. Run a small export first.');
   const workspaces = await discoverWorkspaces(api);
   const available = new Map(workspaces.map(workspace => [workspace.key, workspace]));
-  const candidates = initial.targets.filter(target => available.has(target.workspaceKey));
+  // Project attachments make up the majority of inaccessible files in existing
+  // archives. Prioritize them when testing newly observed Project download
+  // routes; preserve relative order within each kind for predictable rotation.
+  const candidates = initial.targets.filter(target => available.has(target.workspaceKey))
+    .sort((left, right) => Number(right.kind === 'project') - Number(left.kind === 'project'));
   if (!candidates.length) {
     progress.info('No recoverable missing-file records for the signed-in workspace.');
     return { selected: 0, recovered: 0, stillMissing: 0, remainingInArchive: initial.overview.missingFiles };

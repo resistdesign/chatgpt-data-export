@@ -150,8 +150,10 @@ test('bounded recovery does not touch more missing files than selected', async (
     assert.equal(first.recovered, 1);
     assert.equal(first.remainingInArchive, 1);
     const p = await archive.read<{ missing: unknown[] }>(`${root}/projects/${project}/assets-index.json`);
-    assert.equal(p?.missing.length, 1, 'Project file was not processed in the first one-file batch');
-    assert.ok(paths.every(path => !path.includes('file_project_asset')));
+    assert.equal(p?.missing.length, 0, 'Project file is processed first when a one-file batch is requested');
+    const marker = await archive.marker(key, conversation);
+    assert.equal(marker?.missing.length, 1, 'conversation assets remain for later recovery passes');
+    assert.ok(paths.every(path => !path.includes('file_image_asset')));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

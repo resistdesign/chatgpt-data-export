@@ -119,3 +119,5 @@ If ChatGPT's own interface cannot download that file, this suggests the issue ma
 During an opt-in observation of ChatGPT's own authenticated window, Project downloads returned HTTP 200 from `/backend-api/files/download/{id}` with the query names `gizmo_id`, `download_intent`, and `inline`. The exporter now prioritizes that combination for Project files, accepting either a direct file or a JSON descriptor with a signed estuary URL. Chats inside Projects also try the observed `/backend-api/files/{id}/simple` and context-scoped download routes with both conversation and Project IDs.
 
 This improves route compatibility but does **not** guarantee permissions for every historical file. Do not treat a 200 response to a metadata endpoint as proof that an asset was downloaded; only saved, hashed file bytes count.
+
+Targeted recovery currently prioritizes missing Project files to validate their corrected authenticated download route, then processes conversation attachments. It continues to rotate through records rather than repeatedly starting with the same inaccessible file.
