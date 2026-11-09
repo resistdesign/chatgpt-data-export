@@ -4,12 +4,20 @@ interface UiState {
   signedIn: boolean;
   output: string;
   running: boolean;
-  activity: 'idle' | 'exporting' | 'verifying';
+  activity: 'idle' | 'exporting' | 'recovering' | 'verifying';
   status: string;
   error: string | null;
   progress: ProgressSnapshot | null;
   result: string | null;
   events: string[];
+  archive: {
+    workspaces: number; discovered: number; recordedComplete: number; recordedPartial: number;
+    notYetCaptured: number; missingFiles: number; projects: number;
+    projectFilesMissing: number; projectsWithMissing: number;
+    lastRunAt: string | null; lastRunStatus: string | null; verified: false;
+  } | null;
+  archiveLoading: boolean;
+  archiveError: string | null;
 }
 interface AppBridge {
   state(): Promise<UiState>;
@@ -17,6 +25,7 @@ interface AppBridge {
   checkSession(): Promise<boolean>;
   chooseOutput(): Promise<string>;
   start(limit: 25 | null): Promise<boolean>;
+  recover(): Promise<boolean>;
   verify(): Promise<boolean>;
   stop(): Promise<boolean>;
   openOutput(): Promise<boolean>;
@@ -45,6 +54,17 @@ function render(state: UiState): void {
   conn.className = `pill ${state.signedIn ? 'good' : 'muted'}`;
   text('output', state.output);
   el('output').title = state.output;
+  const saved = state.archive;
+  text('archive-overview', state.archiveLoading ? 'Reading saved checkpoints…'
+    : state.archiveError ? `Archive inspection failed: ${state.archiveError}`
+    : saved
+      ? `${saved.recordedComplete.toLocaleString()} complete · ${saved.recordedPartial.toLocaleString()} partial · ${saved.notYetCaptured.toLocaleString()} not yet captured out of ${saved.discovered.toLocaleString()} discovered conversations`
+      : 'No saved archive in this folder yet.');
+  text('archive-missing', saved
+    ? `${saved.missingFiles.toLocaleString()} missing file references, including ${saved.projectFilesMissing.toLocaleString()} across ${saved.projectsWithMissing}/${saved.projects} Projects. Counts are from saved checkpoints, not hash verification.`
+    : 'A small export will create a local inventory and resumable checkpoints.');
+  (el('retry-missing') as HTMLButtonElement).disabled = state.running || !state.signedIn ||
+    state.archiveLoading || !saved || saved.missingFiles === 0;
   text('stage', state.status);
   const progress = state.progress;
   text('counter', progress?.total
@@ -69,7 +89,8 @@ function render(state: UiState): void {
   text('summary', state.error ?? state.result ?? (state.running ? 'Archive operation in progress…' : 'No archive result yet.'));
   el('summary').classList.toggle('error', Boolean(state.error));
   for (const id of ['export-all','test-25']) (el(id) as HTMLButtonElement).disabled = state.running || !state.signedIn;
-  (el('stop') as HTMLButtonElement).disabled = !state.running || state.activity !== 'exporting';
+  (el('stop') as HTMLButtonElement).disabled = !state.running ||
+    (state.activity !== 'exporting' && state.activity !== 'recovering');
   for (const id of ['verify','choose-output']) (el(id) as HTMLButtonElement).disabled = state.running;
   (el('check-session') as HTMLButtonElement).disabled = state.running;
   text('activity-count', `${state.events.length} updates`);
@@ -85,6 +106,7 @@ button('close-sign-in', () => app.closeSignIn());
 button('choose-output', () => app.chooseOutput());
 button('export-all', () => app.start(null));
 button('test-25', () => app.start(25));
+button('retry-missing', () => app.recover());
 button('stop', () => app.stop());
 button('verify', () => app.verify());
 button('open-output', () => app.openOutput());

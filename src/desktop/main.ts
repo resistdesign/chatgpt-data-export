@@ -7,6 +7,7 @@ import { ElectronSessionClient } from '../electron-client.js';
 import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
 import { SessionExpiredError, SessionCheckError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
+import { inspectArchive, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PARTITION = 'persist:chatgpt-data-export';
@@ -16,17 +17,21 @@ interface UiState {
   signedIn: boolean;
   output: string;
   running: boolean;
-  activity: 'idle' | 'exporting' | 'verifying';
+  activity: 'idle' | 'exporting' | 'recovering' | 'verifying';
   status: string;
   error: string | null;
   progress: ProgressSnapshot | null;
   result: string | null;
   events: string[];
+  archive: ArchiveOverview | null;
+  archiveLoading: boolean;
+  archiveError: string | null;
 }
 
 const state: UiState = {
   signedIn: false, output: join(homedir(), 'ChatGPT-Data-Export'), running: false,
   activity: 'idle', status: 'Ready to connect', error: null, progress: null, result: null, events: [],
+  archive: null, archiveLoading: true, archiveError: null,
 };
 let dashboard: BrowserWindow | null = null;
 let signInWindow: BrowserWindow | null = null;
@@ -41,6 +46,28 @@ function event(message: string): void {
   broadcast();
 }
 function description(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+/** Reads saved metadata only. No authentication, network access or file hashing. */
+async function refreshArchiveOverview(): Promise<void> {
+  const output = state.output;
+  state.archiveLoading = true;
+  state.archiveError = null;
+  broadcast();
+  try {
+    const overview = await inspectArchive(output);
+    if (state.output === output) state.archive = overview;
+  } catch (error) {
+    if (state.output === output) {
+      state.archive = null;
+      state.archiveError = description(error);
+    }
+  } finally {
+    if (state.output === output) {
+      state.archiveLoading = false;
+      broadcast();
+    }
+  }
+}
 function ensureDashboard(e: IpcMainInvokeEvent): void {
   if (!dashboard || e.sender !== dashboard.webContents || e.senderFrame?.url !== dashboard.webContents.getURL()) {
     throw new Error('Untrusted dashboard IPC request');
@@ -67,6 +94,9 @@ function finishJob(): void {
 async function authenticate(): Promise<boolean> {
   const client = new ElectronSessionClient(session.fromPartition(PARTITION));
   state.signedIn = await client.authenticated();
+  if (!state.running && (state.status === 'Ready to connect' || state.status === 'Ready to export or recover')) {
+    state.status = state.signedIn ? 'Ready to export or recover' : 'Ready to connect';
+  }
   broadcast();
   return state.signedIn;
 }
@@ -151,7 +181,39 @@ async function runExport(limit: 25 | null): Promise<void> {
       state.error = description(err);
     }
     event(`Export interrupted: ${state.error}. Verified checkpoints remain on disk; restart to resume.`);
-  } finally { progress.stop(); finishJob(); }
+  } finally { progress.stop(); finishJob(); void refreshArchiveOverview(); }
+}
+
+/** A bounded local-checkpoint recovery pass; does not re-fetch the conversation list. */
+async function runRecovery(): Promise<void> {
+  startJob('recovering', 'Recovering up to 10 missing files');
+  const progress = new Progress(snapshot => {
+    state.progress = snapshot;
+    if (snapshot.message) event(snapshot.message);
+    else broadcast();
+  }, false);
+  const client = new ElectronSessionClient(session.fromPartition(PARTITION), 750, progress);
+  const job = { api: client, cancelled: false };
+  current = job;
+  progress.start();
+  try {
+    if (!await client.authenticated()) throw new Error('Sign in to ChatGPT before recovering files.');
+    const result = await recoverMissingAssets(client, state.output, progress, () => job.cancelled, 10);
+    state.status = job.cancelled ? 'Recovery stopped; saved data retained' : 'Missing-file recovery pass finished';
+    state.result = result.selected
+      ? `${result.recovered}/${result.selected} selected missing files recovered. ${result.remainingInArchive} missing file references remain in this archive.`
+      : 'No missing files can be retried for the signed-in workspace.';
+    event(state.result);
+  } catch (error) {
+    if (error instanceof SessionExpiredError) {
+      state.signedIn = false;
+      state.status = 'ChatGPT sign-in expired; saved data retained';
+    } else {
+      state.status = job.cancelled ? 'Recovery stopped; saved data retained' : 'Recovery interrupted';
+    }
+    state.error = description(error);
+    event(`Recovery interrupted: ${state.error}. Existing checkpoints were not removed.`);
+  } finally { progress.stop(); finishJob(); void refreshArchiveOverview(); }
 }
 
 async function runVerify(): Promise<void> {
@@ -179,7 +241,12 @@ async function initialize(): Promise<void> {
     ensureDashboard(e);
     if (state.running) return state.output;
     const result = await dialog.showOpenDialog(dashboard!, { title: 'Choose an export directory', defaultPath: state.output, properties: ['openDirectory', 'createDirectory'] });
-    if (!result.canceled && result.filePaths[0]) { state.output = resolve(result.filePaths[0]); await saveSettings(); broadcast(); }
+    if (!result.canceled && result.filePaths[0]) {
+      state.output = resolve(result.filePaths[0]);
+      await saveSettings();
+      broadcast();
+      void refreshArchiveOverview();
+    }
     return state.output;
   });
   ipcMain.handle('app:start', (e, limit: unknown) => {
@@ -190,11 +257,21 @@ async function initialize(): Promise<void> {
     return true;
   });
   ipcMain.handle('app:verify', e => { ensureDashboard(e); if (state.running) throw new Error('Archive is busy'); void runVerify(); return true; });
+  ipcMain.handle('app:recover', e => {
+    ensureDashboard(e);
+    if (state.running) throw new Error('Archive is busy');
+    if (!state.signedIn || !state.archive || state.archive.missingFiles === 0) {
+      throw new Error('Sign in and select an archive with missing files first.');
+    }
+    void runRecovery();
+    return true;
+  });
   ipcMain.handle('app:stop', e => { ensureDashboard(e); if (current && state.running) { current.cancelled = true; current.api.cancel(); state.status = 'Stopping after current safe checkpoint'; event('Stop requested. Already saved files are retained.'); } return true; });
   ipcMain.handle('app:open-output', async e => { ensureDashboard(e); await mkdir(state.output, { recursive: true }); const message = await shell.openPath(state.output); if (message) throw new Error(message); return true; });
   ipcMain.handle('app:close-sign-in', e => { ensureDashboard(e); signInWindow?.close(); return true; });
   createDashboard();
   await authenticate();
+  void refreshArchiveOverview();
 }
 
 app.on('before-quit', e => {

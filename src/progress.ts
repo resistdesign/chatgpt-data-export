@@ -74,7 +74,8 @@ export class Progress {
     const stageSeconds = Math.floor((Date.now() - this.stageStarted) / 1000);
     // Project/file retry cost varies wildly. An ETA extrapolated from saved
     // checkpoints or earlier stages can be wrong by tens of minutes.
-    const variableDuration = this.stage === 'Capturing' || this.stage === 'Saving Project files';
+    const variableDuration = this.stage === 'Capturing' || this.stage === 'Saving Project files' ||
+      this.stage === 'Recovering missing files';
     const rate = stageSeconds >= 10 && this.done >= 3 ? this.done / stageSeconds : 0;
     const etaSeconds = !variableDuration && rate > 0 && this.total > 0
       ? Math.ceil(Math.max(0, this.total - this.done) / rate) : null;

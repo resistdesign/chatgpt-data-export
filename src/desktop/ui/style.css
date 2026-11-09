@@ -19,3 +19,8 @@ main { max-width:1040px; margin:auto; padding:32px 38px 40px; }
 .pacing { margin-top:8px; color:#8a9bb2; font-size:11px; }
 .progress-details { flex-wrap:wrap; line-height:1.5; }
 .progress-details #detail { max-width:100%; white-space:normal; overflow-wrap:anywhere; }
+
+.saved-archive { margin:0 0 16px 44px; padding:14px; border:1px solid #31445b; background:#121c28; font-size:12px; line-height:1.6; color:var(--text); }
+.saved-archive p { color:var(--muted); margin:6px 0 12px; }
+.saved-archive .button { padding:9px 12px; }
+@media (max-width:720px) { .saved-archive { margin-left:0; } }
