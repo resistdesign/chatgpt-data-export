@@ -210,7 +210,7 @@ export async function saveAssets(
     ? (opts.existing ?? []).filter(file => !selectedPaths.has(file.path))
     : [];
   const missing: AssetResult['missing'] = opts.onlyIds
-    ? (opts.existingMissing ?? []).filter(entry => !selectedPaths.has(`${root}/assets/${safeId(entry.id)}`))
+    ? (opts.existingMissing ?? []).filter(entry => !opts.onlyIds?.has(entry.id))
     : [];
   for (const [assetIndex, ref] of selected.entries()) {
     const update = (method: string, processed = assetIndex): void => {
