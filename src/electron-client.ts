@@ -109,7 +109,11 @@ export class ElectronSessionClient implements ChatGptApi {
         const account = await this.request(
           validateApiPath('/backend-api/accounts/check/v4-2023-04-27'), null, this.token,
         );
-        if (account.status === 200) throw new ResourceDeniedError(path);
+        const accounts = (account.body as { accounts?: unknown } | null)?.accounts;
+        if (account.status === 200 && accounts && typeof accounts === 'object' &&
+          !Array.isArray(accounts) && Object.keys(accounts).length > 0) {
+          throw new ResourceDeniedError(path);
+        }
         if (account.status === 401 || account.status === 403) throw new SessionExpiredError(path);
         throw new SessionCheckError(account.status);
       }
