@@ -4,7 +4,14 @@ import type { ChatGptApi } from './api-types.js';
 import { Archive, safeId, type SavedFile } from './archive.js';
 import { collectAssets, record, str, type AssetReference, type Workspace } from './discovery.js';
 
-export interface AssetResult { files: SavedFile[]; missing: Array<{ id: string; reason: string; attempts?: Array<{ route: string; workspaceHeader: boolean; reason: string }> }> }
+export interface AssetResult {
+  files: SavedFile[];
+  missing: Array<{ id: string; reason: string; attempts?: Array<{ route: string; workspaceHeader: boolean; reason: string }> }>;
+  /** Number of file references the source metadata actually matched. */
+  attempted: number;
+  /** Selected missing IDs no longer present in the saved source metadata. */
+  unlisted: number;
+}
 /** Per-file status with no private filenames, tokens, or signed URLs. */
 export interface AssetProgress { processed: number; total: number; current: number; method: string }
 
@@ -240,11 +247,22 @@ export async function saveAssets(
     /** Target only selected missing file IDs; retain untouched prior index entries. */
     onlyIds?: ReadonlySet<string>;
     existingMissing?: AssetResult['missing'];
+    /** Preserve prior filename metadata during partial recovery. */
+    existingNames?: Array<{ id: string; name: string | null }>;
     onProgress?: (update: AssetProgress) => void;
   },
 ): Promise<AssetResult> {
   const refs = assetReferences(source, opts.projectFiles);
   const selected = opts.onlyIds ? refs.filter(ref => opts.onlyIds?.has(ref.id)) : refs;
+  const unlisted = opts.onlyIds ? Math.max(0, opts.onlyIds.size - selected.length) : 0;
+  // Do not rewrite an index when none of its selected IDs exist in the
+  // original source metadata. Recovery must report those records separately.
+  if (opts.onlyIds && selected.length === 0) {
+    return {
+      files: opts.existing ?? [], missing: opts.existingMissing ?? [],
+      attempted: 0, unlisted,
+    };
+  }
   const selectedPaths = new Set(selected.map(ref => `${root}/assets/${safeId(ref.id)}`));
   // A targeted pass must NEVER drop unrelated prior files or missing records.
   const files: SavedFile[] = opts.onlyIds
@@ -301,7 +319,9 @@ export async function saveAssets(
   }
   await archive.json(`${root}/assets-index.json`, {
     files, missing,
-    names: refs.map(ref => ({ id: ref.id, name: ref.name })),
+    names: opts.onlyIds && opts.existingNames
+      ? opts.existingNames
+      : refs.map(ref => ({ id: ref.id, name: ref.name })),
   });
-  return { files, missing };
+  return { files, missing, attempted: selected.length, unlisted };
 }
