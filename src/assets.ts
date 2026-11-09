@@ -61,8 +61,10 @@ const responseReason = (value: unknown): string => {
   return str(object.error_code) ?? str(object.status) ??
     str(object.detail) ?? str(object.error) ?? 'download URL missing';
 };
-function recoverableAuth(error: unknown): boolean {
-  return error instanceof ApiError && [401, 403].includes(error.status) ||
+function recoverableScope(error: unknown): boolean {
+  // Some ChatGPT workspaces conceal inaccessible files as 404 when the
+  // explicit workspace header is present; try the session's default scope.
+  return error instanceof ApiError && [401, 403, 404].includes(error.status) ||
     error instanceof Error && /permission_error|unauthorized/i.test(error.message);
 }
 function fatal(error: unknown): boolean {
@@ -101,6 +103,14 @@ async function signedFetch(
       url = safeDownloadUrl(new URL(location, url).toString());
       continue;
     }
+    if (response.status === 429 || response.status >= 500) {
+      if (attempt >= 2) {
+        if (response.status === 429) throw new RateLimitExhausted('signed asset bytes');
+        return response;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000 * (2 ** attempt)));
+      continue;
+    }
     return response;
   }
   throw new Error('Too many signed asset redirects');
@@ -118,6 +128,7 @@ async function saveResponse(
     if (!location) throw new Error('Asset redirect has no Location');
     return saveResponse(await signedFetch(new URL(location, 'https://chatgpt.com').href, api, workspaceId), api, archive, output, workspaceId);
   }
+  if (response.status === 429) throw new RateLimitExhausted('asset binary download');
   if (!response.ok) throw new ApiError(response.status, 'asset-binary', `Asset HTTP ${response.status}`);
   const mediaType = (response.headers.get('content-type') ?? '').toLowerCase();
   // Some direct endpoints return a JSON signed-link descriptor rather than bytes.
@@ -203,7 +214,7 @@ export async function saveAssets(
       } catch (error) {
         if (fatal(error)) throw error;
         attempts.push({ route: variant.label, workspaceHeader: true, reason: shortReason(error) });
-        retryWithoutHeader = recoverableAuth(error);
+        retryWithoutHeader = recoverableScope(error);
       }
       if (!downloaded && retryWithoutHeader) {
         try {
