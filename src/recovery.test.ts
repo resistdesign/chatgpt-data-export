@@ -91,7 +91,7 @@ test('targeted recovery preserves valid assets, updates both markers, and does n
       },
       openFile: async path => {
         paths.push(path);
-        assert.match(path, /\/backend-api\/files\/file_(image|project)_asset\/download/);
+        assert.match(path, /^\/backend-api\/files\/(?:download\/file_(?:image|project)_asset|file_(?:image|project)_asset\/download)/);
         return new Response('recovered file bytes', {
           status: 200, headers: { 'content-type': 'application/octet-stream' },
         });
