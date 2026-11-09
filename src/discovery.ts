@@ -1,5 +1,5 @@
 import { safeId, sha256, workspaceKey } from './archive.js';
-import { ApiError } from './errors.js';
+import { ApiError, ResourceDeniedError, SessionExpiredError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import type { Progress } from './progress.js';
 
@@ -21,7 +21,7 @@ const array = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
 const str = (v: unknown): string | undefined => typeof v === 'string' && v.length > 0 ? v : undefined;
 const cursor = (v: unknown): string | null => typeof v === 'string' || typeof v === 'number' ? String(v) : null;
 const query = (args: Record<string, string>): string => new URLSearchParams(args).toString();
-const isMissing = (e: unknown): boolean => e instanceof ApiError && [403, 404, 405].includes(e.status);
+const isMissing = (e: unknown): boolean => e instanceof ResourceDeniedError || (e instanceof ApiError && !(e instanceof SessionExpiredError) && [403, 404, 405].includes(e.status));
 
 export async function discoverWorkspaces(api: ChatGptApi): Promise<Workspace[]> {
   const raw = record(await api.get('/backend-api/accounts/check/v4-2023-04-27'));
@@ -190,7 +190,7 @@ export async function readDetail(api: ChatGptApi, scope: Workspace, id: string):
     }
     return { transport: 'paginated', sourcePages: pages };
   } catch (error) {
-    if (!(error instanceof ApiError && error.status === 404)) throw error;
+    if (!(error instanceof ResourceDeniedError || (error instanceof ApiError && !(error instanceof SessionExpiredError) && [403, 404, 405].includes(error.status)))) throw error;
     const raw = record(await api.get(`/backend-api/conversation/${id}`, scope.id));
     const rawId = str(raw.id) ?? str(raw.conversation_id);
     if (rawId !== id) throw new Error('Legacy conversation identity mismatch');
