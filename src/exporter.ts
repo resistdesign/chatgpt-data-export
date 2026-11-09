@@ -61,6 +61,26 @@ async function captureAccount(api: ChatGptApi, archive: Archive, workspace: Work
   return result;
 }
 
+const PILOT_PROJECT_LIMIT = 3;
+
+/** A pilot checks a bounded, representative set of Projects; full exports scan all. */
+function projectsForRun(
+  inventory: Inventory,
+  conversations: Inventory['conversations'],
+  pilot: boolean,
+): Inventory['projects'] {
+  if (!pilot) return inventory.projects;
+  const referenced = new Set(conversations.map(chat => chat.projectId).filter((id): id is string => Boolean(id)));
+  return inventory.projects
+    .map((project, index) => ({
+      project, index,
+      score: (project.files.length > 0 ? 2 : 0) + (referenced.has(project.id) ? 1 : 0),
+    }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, PILOT_PROJECT_LIMIT)
+    .map(item => item.project);
+}
+
 export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspace: Workspace, progress: Progress, options: ExportOptions, cancelled: () => boolean): Promise<Record<string, unknown>> {
   const root = `workspaces/${workspace.key}`;
   const previous = options.refresh ? undefined : await archive.read<Inventory>(`${root}/inventory.json`);
@@ -69,10 +89,16 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
   if (inventory !== previous) await archive.json(`${root}/inventory.json`, inventory);
   progress.info(`Workspace ${workspace.label}: ${inventory.conversations.length} conversations, ${inventory.projects.length} Projects. Inventory ${previous === inventory ? 'resumed' : 'saved'}.`);
   const account = await captureAccount(api, archive, workspace, progress);
+  const selected = inventory.conversations.slice(0, options.max);
+  const pilot = options.max !== undefined;
+  const projectTargets = projectsForRun(inventory, selected, pilot);
   const projectMissing: string[] = [];
   const sharedFailures: string[] = [];
-  progress.set('Saving Project files', 0, inventory.projects.length, 'Checking Project metadata and attached files');
-  for (const [index, project] of inventory.projects.entries()) {
+  if (pilot) {
+    progress.info(`Pilot: checking ${projectTargets.length}/${inventory.projects.length} representative Projects. A full export checks every Project.`);
+  }
+  progress.set('Saving Project files', 0, projectTargets.length, 'Checking Project metadata and attached files');
+  for (const [index, project] of projectTargets.entries()) {
     const projectRoot = `${root}/projects/${project.id}`;
     const info = await archive.json(`${projectRoot}/info.json`, project.details ?? project.raw);
     let projectFiles: SavedFile[] = [];
@@ -83,11 +109,11 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
       if (assets.missing.length) projectMissing.push(project.id);
     }
     await archive.json(`${projectRoot}/manifest.json`, { files: [info, ...projectFiles] });
-    progress.set('Saving Project files', index + 1, inventory.projects.length,
+    progress.set('Saving Project files', index + 1, projectTargets.length,
       `${index + 1} Projects checked; ${projectMissing.length} missing asset sets`);
-    if ((index + 1) % 10 === 0 || index + 1 === inventory.projects.length) {
-      progress.info(`Project files: ${index + 1}/${inventory.projects.length} checked; ${projectMissing.length} missing asset sets.`);
-    }
+    // A long list of attachment fallbacks can take several minutes. Never
+    // leave the Activity log silent for ten entire Projects.
+    progress.info(`Project files: ${index + 1}/${projectTargets.length} checked; ${projectMissing.length} missing asset sets.`);
   }
   // Shared-only links may not have an owner conversation ID. Keep their raw listing
   // and attempt to capture the share itself without pretending it's a normal chat.
@@ -105,7 +131,6 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
       sharedFailures.push(shareId + ': ' + (error instanceof Error ? error.message : String(error)));
     }
   }
-  const selected = inventory.conversations.slice(0, options.max);
   let completed = 0, skipped = 0, partial = 0;
   const failed: Array<{ id: string; reason: string }> = [];
   let index = 0;
@@ -193,6 +218,7 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
     workspace: { label: workspace.label, key: workspace.key, kind: workspace.kind },
     inventoryGeneratedAt: inventory.generatedAt, discovered: inventory.conversations.length,
     selected: selected.length, completed, skipped, partial, failed,
+    projectCoverage: { total: inventory.projects.length, checked: projectTargets.length, sampled: pilot },
     projectMissing, sharedFailures, account, inventoryWarnings: inventory.warnings, scopes: inventory.scopes, verification,
     status: cancelled() ? 'cancelled' : options.max !== undefined || !options.assets || failed.length || partial || projectMissing.length || sharedFailures.length || inventory.warnings.length || Object.values(account).some(v => v.startsWith('unavailable')) || verification.failed.length || verification.otherMissing.length ? 'partial' : 'complete',
     at: new Date().toISOString(),

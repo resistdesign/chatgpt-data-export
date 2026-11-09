@@ -125,7 +125,7 @@ function createDashboard(): void {
 }
 
 async function runExport(limit: 25 | null): Promise<void> {
-  startJob('exporting', limit === null ? 'Exporting everything available' : 'Testing with 25 conversations per workspace');
+  startJob('exporting', limit === null ? 'Exporting everything available' : 'Testing 25 conversations + up to 3 Projects per workspace');
   const progress = new Progress(snapshot => { state.progress = snapshot; if (snapshot.message) event(snapshot.message); else broadcast(); }, false);
   const client = new ElectronSessionClient(session.fromPartition(PARTITION), 750, progress);
   const job = { api: client, cancelled: false };

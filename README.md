@@ -22,7 +22,7 @@ If you're testing an open PR, check out its feature branch before `yarn install`
 1. Click **Open ChatGPT sign-in**. An embedded Chromium window opens. Sign into your own ChatGPT account there, including any MFA. Close the sign-in window when you're done.
 2. Click **Check connection** to confirm that the application can read your authenticated session.
 3. Choose an ordinary **local folder** for the archive. Default: `~/ChatGPT-Data-Export`. Avoid a live cloud-synced folder during large backups.
-4. Click **Test 25 chats per workspace** first. Inspect the resulting reports. Then click **Export everything available** to resume from those verified files.
+4. Click **Test 25 chats per workspace** first. The pilot also checks **up to 3 representative Projects per workspace**, not every Project attachment; `projectCoverage` in each report shows the sampled scope. Inspect the results. Then click **Export everything available** to scan all Projects and resume from already verified files.
 5. Click **Verify archive** to re-hash saved data offline, and **Open export folder** to review your files.
 
 The application keeps its own encrypted/session cookie store **as managed by Electron/Chromium**, separate from Chrome. The exact at-rest protections vary by OS. It reuses the same persistent `persist:chatgpt-data-export` session on later launches. You don't need to alter Chrome's settings, install an extension or authorize Chrome debugging. The short-lived access token is kept in memory and is not stored by our app.
@@ -50,7 +50,7 @@ The existing checkpoint-based export engine remains unchanged in format and purp
 - Individual missing attachments are retried on later runs.
 - Journal entries are append-only, not a giant file rewritten for every conversation.
 - Bounded concurrency, adaptive request pacing, and explicit rate-limit retries; extended 429s interrupt honestly rather than spinning forever.
-- A small test is **always** marked incomplete, not misrepresented as an entire account backup.
+- A small test is **always** marked incomplete, not misrepresented as an entire account backup; a 25-chat pilot tests at most three representative Projects to avoid a full Project attachment crawl.
 - **Stop safely** cancels new work and retains saved checkpoints. If the app or system crashes, restart the app and use the same output folder to resume.
 - Independent verification: use **Verify archive** in the app, or `yarn verify /path/to/archive` from a terminal (no ChatGPT login required).
 

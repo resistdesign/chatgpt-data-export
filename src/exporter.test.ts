@@ -142,3 +142,56 @@ test('one fatal HTTP 401 keeps the original cause and never journals cancellatio
     assert.doesNotMatch(journal, /"event":"error"/);
   } finally { await rm(output, { recursive: true, force: true }); }
 });
+
+
+test('the 25-chat pilot samples three relevant Projects while full export includes all of them', async () => {
+  const output = await mkdtemp(join(tmpdir(), 'cde-project-pilot-'));
+  try {
+    const workspace = { key: 'account_sample', id: 'workspace_test', label: 'Test', kind: 'business' };
+    const archive = new Archive(output);
+    const projects = [
+      { id: 'g-p-a', raw: {}, files: [] },
+      { id: 'g-p-b', raw: {}, files: [] },
+      { id: 'g-p-c', raw: {}, files: [{ file_id: 'file_c' }] },
+      { id: 'g-p-d', raw: {}, files: [{ file_id: 'file_d' }] },
+      { id: 'g-p-e', raw: {}, files: [{ file_id: 'file_e' }] },
+    ];
+    const inventory: Inventory = {
+      schema: 1, generatedAt: new Date().toISOString(),
+      conversations: [{ id: 'chat_one', title: 'Sample', updated: 1, projectId: 'g-p-c' }],
+      projects, shared: [], warnings: [],
+      scopes: { main: 'complete', archived: 'complete', projects: 'complete', shared: 'complete' },
+    };
+    await archive.json(`workspaces/${workspace.key}/inventory.json`, inventory);
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      get: async path => {
+        if (path.startsWith('/backend-api/conversations/chat_one')) {
+          return { id: 'chat_one', messages: [], page_info: { has_previous_page: false } };
+        }
+        if (path.startsWith('/public-api/gizmos/discovery/mine')) return { items: [] };
+        return {};
+      },
+    };
+    const updates: string[] = [];
+    const progress = new Progress(state => { if (state.message) updates.push(state.message); }, false);
+    const pilot = await exportWorkspace(api, archive, workspace, progress,
+      { output, concurrency: 1, assets: false, max: 25, refresh: false }, () => false);
+    assert.deepEqual(pilot.projectCoverage, { total: 5, checked: 3, sampled: true });
+    assert.equal(pilot.status, 'partial', 'a pilot never claims to be the entire archive');
+    for (const project of ['g-p-c', 'g-p-d', 'g-p-e']) {
+      assert.ok(await archive.read(`workspaces/${workspace.key}/projects/${project}/manifest.json`));
+    }
+    assert.equal(await archive.read(`workspaces/${workspace.key}/projects/g-p-a/manifest.json`), undefined);
+    assert.equal(await archive.read(`workspaces/${workspace.key}/projects/g-p-b/manifest.json`), undefined);
+    assert.ok(updates.some(message => message.includes('3/5 representative Projects')));
+    assert.ok(updates.some(message => message.includes('Project files: 1/3')));
+    assert.ok(updates.some(message => message.includes('Project files: 3/3')));
+
+    const full = await exportWorkspace(api, archive, workspace, new Progress(undefined, false),
+      { output, concurrency: 1, assets: false, max: undefined, refresh: false }, () => false);
+    assert.deepEqual(full.projectCoverage, { total: 5, checked: 5, sampled: false });
+    assert.ok(await archive.read(`workspaces/${workspace.key}/projects/g-p-a/manifest.json`));
+    assert.ok(await archive.read(`workspaces/${workspace.key}/projects/g-p-b/manifest.json`));
+  } finally { await rm(output, { recursive: true, force: true }); }
+});
