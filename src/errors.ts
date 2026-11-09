@@ -35,3 +35,11 @@ export class SessionCheckError extends Error {
     this.name = 'SessionCheckError';
   }
 }
+
+/** Expected cancellation of an in-flight or queued request, not a failed chat. */
+export class ExportCancelledError extends Error {
+  constructor() {
+    super('Export cancelled. Saved checkpoints are retained.');
+    this.name = 'ExportCancelledError';
+  }
+}
