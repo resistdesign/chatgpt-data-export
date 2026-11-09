@@ -47,6 +47,12 @@ function variantsFor(ref: AssetReference, opts: { conversationId?: string; proje
   }
   const conversation = encodeURIComponent(opts.conversationId ?? '');
   return [
+    // Current (2026) ChatGPT attachment workflow scopes access by the
+    // conversation and explicitly declares the intent to download.
+    // Treat the response as bytes OR a signed-link descriptor.
+    { label: 'conversation-context-scoped',
+      path: `/backend-api/files/download/${id}?check_context_scopes_for_conversation_id=${conversation}&download_intent=true`,
+      direct: true },
     { label: 'conversation-signed', path: `/backend-api/files/download/${id}?conversation_id=${conversation}&inline=false`, direct: false },
     { label: 'conversation-short', path: `/backend-api/files/download/${id}?conversation_id=${conversation}`, direct: false },
     { label: 'conversation-direct', path: `/backend-api/files/${id}/download?conversation_id=${conversation}`, direct: true },
