@@ -1,0 +1,22 @@
+{
+  "name": "@resistdesign/chatgpt-data-export",
+  "version": "0.1.0",
+  "description": "Local-first, resumable ChatGPT account archive CLI",
+  "type": "module",
+  "bin": { "chatgpt-data-export": "./dist/cli.js" },
+  "engines": { "node": ">=20.19" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "test": "yarn build && node --test dist/*.test.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": { "playwright-core": "^1.56.0" },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "license": "MIT"
+}
