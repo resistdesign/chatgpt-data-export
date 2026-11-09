@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ElectronSessionClient, validateApiPath, type AuthenticatedSession } from './electron-client.js';
-import { ApiError } from './errors.js';
+import { ApiError, ResourceDeniedError, SessionExpiredError, SessionCheckError } from './errors.js';
 
 const json = (data: unknown, status = 200): Response => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 
@@ -52,4 +52,60 @@ test('unauthorized scope is reported as a real API error, not a successful empty
   const client = new ElectronSessionClient(session, 250);
   await client.authenticated();
   await assert.rejects(client.get('/backend-api/conversations'), error => error instanceof ApiError && error.status === 403);
+});
+
+test('401 for one resource is not mistaken for an expired login or retried repeatedly', async () => {
+  let resourceRequests = 0;
+  let accountChecks = 0;
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'valid-token' });
+    if (url.includes('/backend-api/accounts/check')) {
+      accountChecks++;
+      return json({ accounts: { personal: {} } });
+    }
+    resourceRequests++;
+    return json({ message: 'Not authorized for this conversation' }, 401);
+  } };
+  const client = new ElectronSessionClient(session, 250);
+  assert.equal(await client.authenticated(), true);
+  await assert.rejects(client.get('/backend-api/conversations/chat_restricted'),
+    error => error instanceof ResourceDeniedError && error.status === 401);
+  assert.equal(resourceRequests, 1, 'do not retry a known-unchanged token seven times');
+  assert.equal(accountChecks, 1, 'verify that the account is still signed in');
+});
+
+test('a refreshed bearer token recovers a stale session automatically', async () => {
+  let sessionReads = 0;
+  const session: AuthenticatedSession = { async fetch(url, init) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: ++sessionReads === 1 ? 'stale-token' : 'fresh-token' });
+    const auth = new Headers(init?.headers).get('authorization');
+    return auth === 'Bearer fresh-token' ? json({ items: ['recovered'] }) : json({ error: 'stale' }, 401);
+  } };
+  const client = new ElectronSessionClient(session, 250);
+  assert.equal(await client.authenticated(), true);
+  assert.deepEqual(await client.get('/backend-api/conversations/chat_1'), { items: ['recovered'] });
+  assert.equal(sessionReads, 2);
+});
+
+test('expired global session interrupts instead of converting thousands of chats into failures', async () => {
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'expired-token' });
+    return json({ error: 'unauthorized' }, 401);
+  } };
+  const client = new ElectronSessionClient(session, 250);
+  await client.authenticated();
+  await assert.rejects(client.get('/backend-api/conversations/chat_1'),
+    error => error instanceof SessionExpiredError && error.status === 401);
+});
+
+test('inconclusive account authentication check stops rather than silently losing conversations', async () => {
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'token' });
+    if (url.includes('/backend-api/accounts/check')) return json({ message: 'overloaded' }, 503);
+    return json({ error: 'unauthorized' }, 401);
+  } };
+  const client = new ElectronSessionClient(session, 250);
+  await client.authenticated();
+  await assert.rejects(client.get('/backend-api/conversations/chat_1'),
+    error => error instanceof SessionCheckError && error.status === 503);
 });
