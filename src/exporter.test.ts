@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Archive } from './archive.js';
 import { ExportCancelledError, ResourceDeniedError, SessionExpiredError } from './errors.js';
 import { exportWorkspace } from './exporter.js';
-import { Progress } from './progress.js';
+import { Progress, type ProgressSnapshot } from './progress.js';
 import type { ChatGptApi } from './api-types.js';
 import type { Inventory } from './discovery.js';
 
@@ -54,7 +54,7 @@ test('a denied conversation does not abort other chats and the progress bar coun
       scopes: { main: 'complete', archived: 'complete', projects: 'complete', shared: 'complete' },
     };
     await archive.json(`workspaces/${workspace.key}/inventory.json`, inventory);
-    const updates: Array<{ stage: string; done: number; total: number; note: string; message?: string }> = [];
+    const updates: ProgressSnapshot[] = [];
     const progress = new Progress(state => { updates.push(state); }, false);
     const api: ChatGptApi = {
       cancel: () => undefined,
