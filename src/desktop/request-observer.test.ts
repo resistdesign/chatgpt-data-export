@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames } from './request-observer.js';
+import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames, matchesMissingProjectFile } from './request-observer.js';
 
 test('sanitizes real-looking project download route and removes all values', () => {
   const fileId = 'file_PRIVATE_CUSTOMER_NOTES';
@@ -79,4 +79,24 @@ test('invalid boolean flags and unrecognized header names are never copied', () 
   const summary = formatObservedRequests([observed!]).join('\n');
   assert.doesNotMatch(summary, /SECRET|PRIVATE|HIDDEN|x-secret/);
   assert.match(summary, /headers present: authorization, cookie/);
+});
+
+test('browser observation compares the exact missing Project and file IDs privately', () => {
+  const pair = 'g-p-SECRET' + '\0' + 'file_SECRET';
+  const missing = new Set([pair]);
+  const url = 'https://chatgpt.com/backend-api/files/download/file_SECRET?' +
+    'download_intent=true&gizmo_id=g-p-SECRET&inline=false';
+  const same = matchesMissingProjectFile(url, missing);
+  const different = matchesMissingProjectFile(url.replace('file_SECRET', 'file_OTHER'), missing);
+  const unrelated = matchesMissingProjectFile(
+    'https://chatgpt.com/backend-api/conversation/SECRET', missing);
+  assert.equal(same, true);
+  assert.equal(different, false);
+  assert.equal(unrelated, undefined);
+  const summary = formatObservedRequests([{
+    ...summarizeFileRequest(url, 200)!,
+    matchesArchivedMissingProjectFile: same,
+  }]).join('\n');
+  assert.match(summary, /same missing Project file: YES/);
+  assert.doesNotMatch(summary, /file_SECRET|g-p-SECRET/);
 });

@@ -15,6 +15,8 @@ export interface ObservedFileRequest {
   booleans?: { inline?: boolean; download_intent?: boolean };
   /** Allowlisted header names only. Header values are discarded. */
   headerNames?: string[];
+  /** Compared only in memory against the saved archive, never expose IDs. */
+  matchesArchivedMissingProjectFile?: boolean;
 }
 const knownQueryKeys = new Set([
   'gizmo_id', 'conversation_id', 'check_context_scopes_for_conversation_id',
@@ -80,6 +82,25 @@ export function summarizeFileRequest(
   };
 }
 
+/** Identify a matching missing Project attachment without returning any IDs. */
+export function matchesMissingProjectFile(
+  input: string,
+  missingPairs: ReadonlySet<string>,
+): boolean | undefined {
+  let url: URL;
+  try { url = new URL(input); } catch { return undefined; }
+  if (url.origin !== 'https://chatgpt.com') return undefined;
+  const project = url.searchParams.get('gizmo_id');
+  if (!project) return undefined;
+  const parts = url.pathname.split('/').filter(Boolean);
+  let fileId: string | undefined;
+  if (parts.length === 4 && parts[0] === 'backend-api' && parts[1] === 'files') {
+    if (parts[2] === 'download') fileId = parts[3];
+    else if (parts[3] === 'simple' || parts[3] === 'download') fileId = parts[2];
+  }
+  return fileId ? missingPairs.has(`${project}\0${fileId}`) : undefined;
+}
+
 export function formatObservedRequests(requests: ReadonlyArray<ObservedFileRequest>): string[] {
   return requests.map((request, index) => {
     const params = request.queryKeys.length ? request.queryKeys.join(', ') : 'none';
@@ -89,6 +110,8 @@ export function formatObservedRequests(requests: ReadonlyArray<ObservedFileReque
       : '';
     const headers = request.headerNames?.length ? request.headerNames.join(', ') : '';
     return `${index + 1}. ${request.method} ${request.route} [${params}${extra}] ${request.status}` +
-      (flags ? ` | flags: ${flags}` : '') + (headers ? ` | headers present: ${headers}` : '');
+      (flags ? ` | flags: ${flags}` : '') + (headers ? ` | headers present: ${headers}` : '') +
+      (request.matchesArchivedMissingProjectFile === undefined ? ''
+        : ` | same missing Project file: ${request.matchesArchivedMissingProjectFile ? 'YES' : 'no'}`);
   });
 }

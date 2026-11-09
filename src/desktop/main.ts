@@ -7,8 +7,8 @@ import { ElectronSessionClient } from '../electron-client.js';
 import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
 import { SessionExpiredError, SessionCheckError, ExportCancelledError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
-import { inspectArchive, archiveDiagnosticText, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
-import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames, type ObservedFileRequest } from './request-observer.js';
+import { inspectArchive, archiveDiagnosticText, missingProjectFilePairs, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
+import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames, matchesMissingProjectFile, type ObservedFileRequest } from './request-observer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PARTITION = 'persist:chatgpt-data-export';
@@ -120,12 +120,13 @@ function stopFileObservation(): void {
   state.fileObservation.active = false;
   event(`Download observation stopped: ${state.fileObservation.requests.length} sanitized file API responses.`);
 }
-function toggleFileObservation(): void {
+async function toggleFileObservation(): Promise<void> {
   if (state.running) throw new Error('Finish the archive operation before observing a download');
   if (state.fileObservation.active) {
     stopFileObservation();
     return;
   }
+  const missingPairs = await missingProjectFilePairs(state.output);
   state.fileObservation = { active: true, requests: [] };
   const filter = { urls: ['https://chatgpt.com/backend-api/*'] };
   const network = session.fromPartition(PARTITION).webRequest;
@@ -148,7 +149,11 @@ function toggleFileObservation(): void {
       details.webContentsId !== signIn.webContents.id) return;
     const item = summarizeFileRequest(details.url, details.statusCode, details.method, names);
     if (!item) return;
-    state.fileObservation.requests = [...state.fileObservation.requests, item].slice(-30);
+    const match = matchesMissingProjectFile(details.url, missingPairs);
+    const safeItem = match === undefined ? item : {
+      ...item, matchesArchivedMissingProjectFile: match,
+    };
+    state.fileObservation.requests = [...state.fileObservation.requests, safeItem].slice(-30);
     broadcast();
   });
   openSignIn();
@@ -330,9 +335,9 @@ async function initialize(): Promise<void> {
     event('Safe diagnostics copied: archive failures, observed route shapes, boolean flags, and header names only.');
     return true;
   });
-  ipcMain.handle('app:observe-file', e => {
+  ipcMain.handle('app:observe-file', async e => {
     ensureDashboard(e);
-    toggleFileObservation();
+    await toggleFileObservation();
     return true;
   });
   ipcMain.handle('app:recover', e => {

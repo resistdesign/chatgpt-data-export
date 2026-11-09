@@ -184,6 +184,17 @@ export async function inspectArchive(output: string): Promise<ArchiveOverview | 
 }
 
 /**
+ * Internal-only comparison index. Identifier pairs are retained only in the
+ * Electron main process during an explicitly enabled browser observation.
+ * Neither these IDs nor hashes of them appear in UI state, logs or exports.
+ */
+export async function missingProjectFilePairs(output: string): Promise<ReadonlySet<string>> {
+  const result = await scan(output);
+  return new Set(result.targets.filter(target => target.kind === 'project')
+    .map(target => `${target.ownerId}\0${target.fileId}`));
+}
+
+/**
  * Copyable diagnostic text: aggregate counts and known route labels ONLY.
  * No account IDs, file IDs, filenames, paths, raw server messages or URLs.
  */

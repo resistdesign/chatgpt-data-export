@@ -30,6 +30,7 @@ interface UiState {
       queryKeys: string[]; otherQueryKeys: number; status: string;
       booleans?: { inline?: boolean; download_intent?: boolean };
       headerNames?: string[];
+      matchesArchivedMissingProjectFile?: boolean;
     }>;
   };
 }
