@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { ElectronSessionClient } from '../electron-client.js';
 import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
+import { SessionExpiredError, SessionCheckError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -138,9 +139,18 @@ async function runExport(limit: 25 | null): Promise<void> {
     state.result = `Export ${report.status}. Review report.json before treating the archive as complete.`;
     event(state.result);
   } catch (err) {
-    state.status = job.cancelled ? 'Export stopped; checkpoints retained' : 'Export interrupted';
-    state.error = description(err);
-    event(`Export stopped: ${description(err)}. Rerun to resume from saved checkpoints.`);
+    if (err instanceof SessionExpiredError) {
+      state.signedIn = false;
+      state.status = 'ChatGPT sign-in expired; saved data is intact';
+      state.error = 'Your ChatGPT session needs to be renewed. Open ChatGPT sign-in, then resume the export.';
+    } else if (err instanceof SessionCheckError) {
+      state.status = 'Could not verify ChatGPT session; export paused';
+      state.error = description(err);
+    } else {
+      state.status = job.cancelled ? 'Export stopped; checkpoints retained' : 'Export interrupted';
+      state.error = description(err);
+    }
+    event(`Export interrupted: ${state.error}. Verified checkpoints remain on disk; restart to resume.`);
   } finally { progress.stop(); finishJob(); }
 }
 
