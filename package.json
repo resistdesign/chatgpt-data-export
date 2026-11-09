@@ -7,7 +7,7 @@
     "chatgpt-data-export-verify": "./dist/verify.js"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
