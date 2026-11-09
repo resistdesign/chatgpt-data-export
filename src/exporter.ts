@@ -1,6 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import { Archive, type CompletionMarker, type SavedFile } from './archive.js';
-import { ApiError, RateLimitExhausted } from './errors.js';
+import { ApiError, RateLimitExhausted, SessionExpiredError, SessionCheckError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import { saveAssets } from './assets.js';
 import { buildInventory, discoverWorkspaces, readDetail, record, array, str, type Inventory, type Workspace } from './discovery.js';
@@ -30,7 +30,7 @@ async function captureAccount(api: ChatGptApi, archive: Archive, workspace: Work
     progress.set(`Account: ${name}`);
     try { savedFiles.push(await archive.json(`${root}/account/${name}.json`, await api.get(path, workspace.id))); result[name] = 'saved'; }
     catch (error) {
-      if (error instanceof ApiError && [403, 404, 405].includes(error.status)) result[name] = `unavailable (HTTP ${error.status})`;
+      if (error instanceof ApiError && !(error instanceof SessionExpiredError) && [401, 403, 404, 405].includes(error.status)) result[name] = `unavailable (HTTP ${error.status})`;
       else throw error;
     }
   }
@@ -53,7 +53,7 @@ async function captureAccount(api: ChatGptApi, archive: Archive, workspace: Work
     savedFiles.push(await archive.json(`${root}/account/custom_gpts.json`, gpts));
     result.custom_gpts = `saved (${gpts.length})`;
   } catch (error) {
-    if (error instanceof ApiError && [403, 404, 405].includes(error.status)) result.custom_gpts = `unavailable (HTTP ${error.status})`;
+    if (error instanceof ApiError && !(error instanceof SessionExpiredError) && [401, 403, 404, 405].includes(error.status)) result.custom_gpts = `unavailable (HTTP ${error.status})`;
     else throw error;
   }
   await archive.json(`${root}/account/status.json`, result);
@@ -133,12 +133,23 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
       } catch (error) {
         // An expired login must interrupt the archive, not generate thousands of
         // bogus per-conversation failures while the remaining queue drains.
-        if (error instanceof RateLimitExhausted || (error instanceof ApiError && error.status === 401)) throw error;
+        if (error instanceof RateLimitExhausted || error instanceof SessionExpiredError || error instanceof SessionCheckError) throw error;
         const reason = error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240);
         failed.push({ id: item.id, reason });
-        await archive.journal(workspace.key, { event: 'error', id: item.id, reason });
+        await archive.journal(workspace.key, {
+          event: 'error', id: item.id, reason,
+          ...(error instanceof ApiError ? { httpStatus: error.status, endpoint: error.endpoint } : {}),
+        });
+        if (failed.length <= 10 || failed.length % 25 === 0) {
+          const kind = error instanceof ApiError ? `HTTP ${error.status}` : reason.slice(0, 80);
+          progress.info(`Conversation attempt ${current + 1}/${selected.length} failed (${kind}); ${failed.length} total errors. See journal.jsonl for details.`);
+        }
       }
-      progress.set('Capturing', completed + failed.length, selected.length, `${skipped} previously saved; ${partial} partial; ${failed.length} errors`);
+      // A failed attempt isn't saved data. Progress represents verified conversation
+      // completions, while the note explicitly tracks attempts and partial captures.
+      const verifiedComplete = completed - partial;
+      progress.set('Capturing', verifiedComplete, selected.length,
+        `${completed + failed.length} attempted; ${verifiedComplete} complete; ${partial} partial; ${skipped} reused; ${failed.length} errors`);
     }
   };
   const tasks = Array.from({ length: options.concurrency }, () => worker());
@@ -146,7 +157,11 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
   catch (error) {
     api.cancel();
     await Promise.allSettled(tasks);
-    await archive.json(`${root}/interrupted.json`, { at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error), completed, failed });
+    await archive.json(`${root}/interrupted.json`, {
+      at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error),
+      completed, partial, skipped, attempted: completed + failed.length, failed,
+    });
+    progress.info(`Export interrupted: ${completed - partial} complete, ${partial} partial, ${failed.length} failed attempts. Check interrupted.json and journal.jsonl.`);
     throw error;
   }
   const verification = await archive.verifyWorkspace(workspace.key);
