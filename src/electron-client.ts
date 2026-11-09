@@ -1,4 +1,4 @@
-import { ApiError, RateLimitExhausted, ResourceDeniedError, SessionExpiredError, SessionCheckError } from './errors.js';
+import { ApiError, RateLimitExhausted, ResourceDeniedError, SessionExpiredError, SessionCheckError, ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import type { Progress } from './progress.js';
 
@@ -72,11 +72,11 @@ export class ElectronSessionClient implements ChatGptApi {
     this.pacing = new Promise<void>(resolve => { release = resolve; });
     await previous;
     try {
-      if (this.halted) throw new Error('Export cancelled. Saved checkpoints are retained.');
+      if (this.halted) throw new ExportCancelledError();
       const due = Math.max(Date.now(), this.nextAt, this.cooldownUntil);
       this.nextAt = due + this.gap;
       while (Date.now() < due) {
-        if (this.halted) throw new Error('Export cancelled. Saved checkpoints are retained.');
+        if (this.halted) throw new ExportCancelledError();
         const seconds = Math.ceil((due - Date.now()) / 1000);
         this.progress?.waiting(`cooldown: next request in ${seconds}s`);
         await sleep(Math.min(750, due - Date.now()));
@@ -151,7 +151,7 @@ export class ElectronSessionClient implements ChatGptApi {
       if (raw.length) { try { body = JSON.parse(raw) as unknown; } catch { body = { nonJson: true }; } }
       return { status: response.status, body, retryAfter: response.headers.get('Retry-After') };
     } catch (error) {
-      if (this.halted) throw new Error('Export cancelled. Saved checkpoints are retained.');
+      if (this.halted) throw new ExportCancelledError();
       this.progress?.info(`ChatGPT request interrupted: ${error instanceof Error ? error.name : 'network error'}. Retrying if possible.`);
       return { status: 503, body: null, retryAfter: null };
     }
