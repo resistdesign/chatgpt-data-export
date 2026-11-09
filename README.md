@@ -138,3 +138,19 @@ The opt-in download observer also compares a browser file request to the archive
 Click **Back up conversations first** for an account-wide, resumable, history-first pass. This reuses the existing inventory and verified conversation checkpoints; saves raw conversation JSON and Project/account metadata; and indexes missing attachments **without downloading any asset bytes**. Previously verified attachments are retained in their original locations, and unavailable/deferred attachments remain explicitly marked missing. Project file lists and individual asset references can be recovered later. The archive correctly remains **partial** while attachments are deferred.
 
 **Include attachments (slower)** is a separate mode for downloading accessible file bytes. It will retry inaccessible attachments, so run the fast pass first when the immediate priority is backing up the full conversation history. The 25-item test still includes attachment attempts. An interruption retains completed conversation checkpoints; resume the same mode without clearing the archive.
+
+
+### Resuming after HTTP 429 rate limits
+
+If the ChatGPT server begins returning HTTP 429 repeatedly, use **Stop safely** and quit Electron before updating. Then, in the repository, run:
+
+```bash
+git pull --ff-only
+yarn start
+```
+
+Keep the original output directory selected and click **Back up conversations first**. The existing conversation inventory and verified per-conversation checkpoints are reused; do **not** delete or clear the archive.
+
+The request scheduler is shared by all concurrent workers. A 429 now triggers a **real global pause** (starting around 30 seconds, doubling on repeated 429s, capped around five minutes before jitter), extended if ChatGPT sends a longer `Retry-After`. Requests already waiting in line recheck the deadline; they cannot slip past a newer pause. After five successful responses, pacing eases gradually. The UI distinguishes ordinary **Request spacing** from **Rate-limit pause**. **Stop safely** interrupts either wait without losing saved checkpoints.
+
+This reduces wasted requests and protects the session, but cannot exceed the server's permitted rate. If 429s persist after the bounded retries, the run stops rather than claiming an incomplete conversation was saved; resume later from the same folder.
