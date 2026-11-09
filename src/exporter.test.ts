@@ -191,8 +191,7 @@ test('the 25-chat pilot samples three relevant Projects while full export includ
     assert.equal(await archive.read(`workspaces/${workspace.key}/projects/g-p-a/manifest.json`), undefined);
     assert.equal(await archive.read(`workspaces/${workspace.key}/projects/g-p-b/manifest.json`), undefined);
     assert.ok(updates.some(message => message.includes('3/5 representative Projects')));
-    assert.ok(updates.some(message => message.includes('Project files: 1/3')));
-    assert.ok(updates.some(message => message.includes('Project files: 3/3')));
+    assert.ok(updates.some(message => message.includes('Projects: 3/3 metadata saved')));
 
     const full = await exportWorkspace(api, archive, workspace, new Progress(undefined, false),
       { output, concurrency: 1, assets: false, max: undefined, refresh: false }, () => false);
