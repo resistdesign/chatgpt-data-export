@@ -135,6 +135,31 @@ export class ElectronSessionClient implements ChatGptApi {
     throw new Error('Unreachable retry state');
   }
 
+  /**
+   * Binary route for ChatGPT-owned file endpoints. Electron keeps cookies, and
+   * redirect:'manual' ensures bearer tokens are NEVER sent to CDN redirects.
+   * Only paths under the known ChatGPT API origin may be requested.
+   */
+  async openFile(path: string, workspaceId: string | null = null): Promise<Response> {
+    const url = validateApiPath(path);
+    if (!this.token) this.token = await this.sessionToken();
+    if (!this.token) throw new SessionExpiredError(path);
+    await this.pace();
+    const headers: Record<string, string> = {
+      accept: '*/*',
+      authorization: `Bearer ${this.token}`,
+    };
+    if (workspaceId) headers['ChatGPT-Account-Id'] = workspaceId;
+    return this.session.fetch(url, {
+      method: 'GET',
+      headers,
+      credentials: 'include',
+      cache: 'no-store',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeout),
+    });
+  }
+
   private async request(url: string, workspaceId: string | null, token: string): Promise<FetchReply> {
     try {
       const headers: Record<string, string> = { accept: 'application/json', authorization: `Bearer ${token}` };
