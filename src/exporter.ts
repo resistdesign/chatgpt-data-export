@@ -104,7 +104,11 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
     let projectFiles: SavedFile[] = [];
     if (options.assets) {
       const previousAssets = await archive.read<{ files: SavedFile[] }>(`${projectRoot}/assets-index.json`);
-      const assets = await saveAssets(api, archive, workspace, projectRoot, project.details ?? project.raw, { projectId: project.id, projectFiles: project.files, existing: previousAssets?.files });
+      const assets = await saveAssets(api, archive, workspace, projectRoot, project.details ?? project.raw, {
+        projectId: project.id, projectFiles: project.files, existing: previousAssets?.files,
+        onProgress: asset => progress.set('Saving Project files', index, projectTargets.length,
+          `Project ${index + 1}/${projectTargets.length}: file ${asset.current}/${asset.total} · ${asset.method}`),
+      });
       projectFiles = assets.files;
       if (assets.missing.length) projectMissing.push(project.id);
     }
@@ -159,8 +163,11 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           const source = reusable ? await archive.read<unknown>(prior.raw.path) : await readDetail(api, workspace, item.id);
           if (!source) throw new Error('Conversation detail is missing');
           const raw = reusable ? prior.raw : await archive.json(`${conversationRoot}/raw.json`, source);
-          const assets = options.assets ? await saveAssets(api, archive, workspace, conversationRoot, source, { conversationId: item.id, existing: prior?.files })
-            : { files: [], missing: [{ id: '*', reason: 'Assets intentionally disabled' }] };
+          const assets = options.assets ? await saveAssets(api, archive, workspace, conversationRoot, source, {
+            conversationId: item.id, existing: prior?.files,
+            onProgress: asset => captureProgress(
+              `Conversation ${current + 1}/${selected.length}: file ${asset.current}/${asset.total} · ${asset.method}`),
+          }) : { files: [], missing: [{ id: '*', reason: 'Assets intentionally disabled' }] };
           const marker: CompletionMarker = {
             schema: 1, id: item.id, updated: item.updated, raw, files: assets.files, missing: assets.missing, completedAt: new Date().toISOString(),
           };

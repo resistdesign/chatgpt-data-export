@@ -31,11 +31,16 @@ test('Project files use gizmo_id and fall back to a direct binary route after pe
       },
     };
     const archive = new Archive(dir);
+    const progress: Array<{ processed: number; total: number; current: number; method: string }> = [];
     const assets = await saveAssets(api, archive, workspace, 'workspaces/test/projects/g-p-one',
-      {}, { projectId: 'g-p-one', projectFiles: [{ file_id: 'file_project', name: 'notes.txt' }] });
+      {}, { projectId: 'g-p-one', projectFiles: [{ file_id: 'file_project', name: 'notes.txt' }],
+        onProgress: item => progress.push(item),
+      });
     assert.equal(assets.missing.length, 0);
     assert.equal(assets.files.length, 1);
     assert.equal(await readFile(archive.path(assets.files[0]!.path), 'utf8'), 'project file contents');
+    assert.ok(progress.some(item => item.method.includes('project-direct')), 'fallback method is visible while running');
+    assert.deepEqual(progress.at(-1), { processed: 1, total: 1, current: 1, method: 'File saved' });
     assert.ok(calls[0]!.path.includes('?gizmo_id=g-p-one'));
     assert.ok(!calls[0]!.path.includes('inline='));
     assert.ok(calls.some(call => call.scope === null), 'a denied workspace header triggers a no-header retry');

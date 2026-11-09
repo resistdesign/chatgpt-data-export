@@ -5,6 +5,8 @@ import { Archive, safeId, type SavedFile } from './archive.js';
 import { collectAssets, record, str, type AssetReference, type Workspace } from './discovery.js';
 
 export interface AssetResult { files: SavedFile[]; missing: Array<{ id: string; reason: string; attempts?: Array<{ route: string; workspaceHeader: boolean; reason: string }> }> }
+/** Per-file status with no private filenames, tokens, or signed URLs. */
+export interface AssetProgress { processed: number; total: number; current: number; method: string }
 
 /** Signed URLs never receive bearer credentials; enforce HTTPS and known asset/CDN hosts. */
 export function safeDownloadUrl(input: string): URL {
@@ -192,20 +194,32 @@ export async function saveAssets(
   workspace: Workspace,
   root: string,
   source: unknown,
-  opts: { conversationId?: string; projectId?: string; projectFiles?: unknown[]; existing?: SavedFile[] },
+  opts: {
+    conversationId?: string; projectId?: string; projectFiles?: unknown[]; existing?: SavedFile[];
+    onProgress?: (update: AssetProgress) => void;
+  },
 ): Promise<AssetResult> {
   const files: SavedFile[] = [];
   const missing: AssetResult['missing'] = [];
   const refs = assetReferences(source, opts.projectFiles);
-  for (const ref of refs) {
+  for (const [assetIndex, ref] of refs.entries()) {
+    const update = (method: string, processed = assetIndex): void => {
+      opts.onProgress?.({ processed, total: refs.length, current: assetIndex + 1, method });
+    };
+    update('Checking existing file');
     const output = `${root}/assets/${safeId(ref.id)}`;
     const previous = opts.existing?.find(file => file.path === output);
-    if (previous && await archive.verified(previous)) { files.push(previous); continue; }
+    if (previous && await archive.verified(previous)) {
+      files.push(previous);
+      update('Existing file verified', assetIndex + 1);
+      continue;
+    }
 
     const attempts: Attempt[] = [];
     let downloaded: SavedFile | undefined;
     for (const variant of variantsFor(ref, opts)) {
       if (downloaded) break;
+      update(`Trying ${variant.label} download`);
       // A rejected workspace header does not necessarily mean the browser
       // account lacks access; retry that route once without the header.
       let retryWithoutHeader = false;
@@ -217,6 +231,7 @@ export async function saveAssets(
         retryWithoutHeader = recoverableScope(error);
       }
       if (!downloaded && retryWithoutHeader) {
+        update(`Retrying ${variant.label} without workspace header`);
         try {
           downloaded = await downloadVariant(api, archive, output, variant, null);
         } catch (error) {
@@ -231,6 +246,7 @@ export async function saveAssets(
       reason: `No accessible download after ${attempts.length} attempts; ${attempts.at(-1)?.reason ?? 'no supported route'}`,
       attempts,
     });
+    update(downloaded ? 'File saved' : 'File unavailable', assetIndex + 1);
   }
   await archive.json(`${root}/assets-index.json`, {
     files, missing,
