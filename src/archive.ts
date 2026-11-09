@@ -89,7 +89,10 @@ export class Archive {
     if (assetsRequested && (marker.missing.length || !(await Promise.all(marker.files.map(file => this.verified(file)))).every(Boolean))) return false;
     return true;
   }
-  async verifyWorkspace(workspace: string): Promise<{ expected: number; complete: number; partial: number; failed: string[]; otherMissing: string[] }> {
+  async verifyWorkspace(
+    workspace: string,
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<{ expected: number; complete: number; partial: number; failed: string[]; otherMissing: string[] }> {
     const scope = `workspaces/${safeId(workspace)}`;
     const index = await this.read<{ conversations?: Array<{ id: string }> }>(`${scope}/inventory.json`);
     if (!index?.conversations) throw new Error(`No inventory for workspace ${workspace}`);
@@ -97,11 +100,17 @@ export class Archive {
     let partial = 0;
     const failed: string[] = [];
     const otherMissing: string[] = [];
+    let checked = 0;
+    onProgress?.(0, index.conversations.length);
     for (const conversation of index.conversations) {
       const marker = await this.marker(workspace, conversation.id);
-      if (!marker || !await this.verified(marker.raw)) { failed.push(conversation.id); continue; }
-      if (marker.missing.length || !(await Promise.all(marker.files.map(f => this.verified(f)))).every(Boolean)) partial++;
+      if (!marker || !await this.verified(marker.raw)) failed.push(conversation.id);
+      else if (marker.missing.length || !(await Promise.all(marker.files.map(f => this.verified(f)))).every(Boolean)) partial++;
       else complete++;
+      checked++;
+      if (checked % 25 === 0 || checked === index.conversations.length) {
+        onProgress?.(checked, index.conversations.length);
+      }
     }
     const manifests = [`${scope}/account/manifest.json`, ...((index as { projects?: Array<{ id: string }> }).projects ?? []).map(p => `${scope}/projects/${safeId(p.id)}/manifest.json`)];
     for (const path of manifests) {
