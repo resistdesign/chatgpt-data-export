@@ -219,25 +219,32 @@ export function collectAssets(data: unknown): AssetReference[] {
   };
   visit(data);
   const seenText = new WeakSet<object>();
+
   const sandbox = (value: unknown, messageId: string | null = null, depth = 0): void => {
-    if (depth > 70 || !value || typeof value !== 'object' || seenText.has(value)) return;
+    if (depth > 70 || !value) return;
+    // Most generated attachments are Markdown links inside content.parts,
+    // which is an ARRAY OF STRINGS, not an object with a string property.
+    if (typeof value === 'string') {
+      if (!messageId || !/^[A-Za-z0-9_-]{1,256}$/.test(messageId)) return;
+      const regexp = /sandbox:\/mnt\/data\/([^\s)<>"']+)/g;
+      for (const match of value.matchAll(regexp)) {
+        const sandboxPath = `/mnt/data/${match[1]}`;
+        const assetId = 'sandbox_' + sha256(messageId + ':' + sandboxPath).slice(0, 32);
+        assets.set('sandbox:' + assetId, {
+          id: assetId, kind: 'sandbox', messageId, sandboxPath,
+          name: match[1]?.split('/').at(-1) ?? null,
+        });
+      }
+      return;
+    }
+    if (typeof value !== 'object' || seenText.has(value)) return;
     seenText.add(value);
     if (Array.isArray(value)) { value.forEach(part => sandbox(part, messageId, depth + 1)); return; }
     const node = record(value);
     const id = str(node.id);
     const message = record(node.message);
     const activeId = str(message.id) ?? (node.content !== undefined || node.author !== undefined ? id : undefined) ?? messageId;
-    for (const [key, part] of Object.entries(node)) {
-      if (typeof part === 'string' && activeId && /^[A-Za-z0-9_-]{1,256}$/.test(activeId)) {
-        const regexp = /sandbox:\/mnt\/data\/([^\s)<>"']+)/g;
-        for (const match of part.matchAll(regexp)) {
-          const sandboxPath = `/mnt/data/${match[1]}`;
-          const assetId = 'sandbox_' + sha256(activeId + ':' + sandboxPath).slice(0, 32);
-          assets.set('sandbox:' + assetId, { id: assetId, kind: 'sandbox', messageId: activeId, sandboxPath, name: match[1]?.split('/').at(-1) ?? null });
-        }
-      }
-      if (key !== 'sourcePages' || depth < 65) sandbox(part, activeId, depth + 1);
-    }
+    for (const part of Object.values(node)) sandbox(part, activeId, depth + 1);
   };
   sandbox(data);
   return [...assets.values()];
