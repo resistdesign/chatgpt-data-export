@@ -99,7 +99,7 @@ export class ElectronSessionClient implements ChatGptApi {
         // A single private endpoint returning 401 does NOT prove the entire
         // login has expired. Previous versions retried an unchanged token
         // seven times and aborted the whole archive over one restricted chat.
-        const previousToken = this.token;
+        const previousToken: string | undefined = this.token;
         this.token = await this.sessionToken();
         if (!this.token) throw new SessionExpiredError(path);
         if (attempt === 0 && this.token !== previousToken) {
