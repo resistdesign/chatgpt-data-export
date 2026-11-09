@@ -109,3 +109,35 @@ test('inconclusive account authentication check stops rather than silently losin
   await assert.rejects(client.get('/backend-api/conversations/chat_1'),
     error => error instanceof SessionCheckError && error.status === 503);
 });
+
+test('binary asset 401 checks account scope before declaring a login expired', async () => {
+  const paths: string[] = [];
+  const session: AuthenticatedSession = { async fetch(url, init) {
+    paths.push(url);
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'valid-token' });
+    if (url.includes('/backend-api/accounts/check')) return json({ accounts: { business: {} } });
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer valid-token');
+    assert.equal(new Headers(init?.headers).get('ChatGPT-Account-Id'), 'account-1');
+    return json({ error: 'no access' }, 401);
+  } };
+  const client = new ElectronSessionClient(session, 250);
+  await client.authenticated();
+  await assert.rejects(client.openFile('/backend-api/files/file_one/download', 'account-1'),
+    error => error instanceof ResourceDeniedError && error.status === 401);
+  assert.equal(paths.filter(x => x.includes('/backend-api/files/')).length, 1);
+});
+
+test('binary asset request never follows a redirected token to another origin', async () => {
+  const session: AuthenticatedSession = { async fetch(url, init) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'valid-token' });
+    assert.equal(init?.redirect, 'manual');
+    return new Response(null, {
+      status: 302, headers: { Location: 'https://files.oaiusercontent.com/signed-asset' },
+    });
+  } };
+  const client = new ElectronSessionClient(session, 250);
+  await client.authenticated();
+  const response = await client.openFile('/backend-api/files/file_one/download', 'account-1');
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get('location'), 'https://files.oaiusercontent.com/signed-asset');
+});
