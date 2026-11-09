@@ -8,7 +8,7 @@ The goal is a first-class backup experience: sign in once, save data locally, fo
 
 ## Run it on your Mac
 
-Requires Node.js **20.19+**, Yarn, internet access, and macOS, Windows, or Linux with a graphical desktop. No preinstalled Chrome is needed.
+Requires Node.js **22.12+**, Yarn, internet access, and macOS, Windows, or Linux with a graphical desktop. No preinstalled Chrome is needed.
 
 ```bash
 git clone https://github.com/resistdesign/chatgpt-data-export.git
