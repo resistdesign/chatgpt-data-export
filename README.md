@@ -121,3 +121,9 @@ During an opt-in observation of ChatGPT's own authenticated window, Project down
 This improves route compatibility but does **not** guarantee permissions for every historical file. Do not treat a 200 response to a metadata endpoint as proof that an asset was downloaded; only saved, hashed file bytes count.
 
 Targeted recovery currently prioritizes missing Project files to validate their corrected authenticated download route, then processes conversation attachments. It continues to rotate through records rather than repeatedly starting with the same inaccessible file.
+
+### Recovery accounting and request comparison
+
+A missing-file recovery now distinguishes **selected file references** from **actual download attempts**. Old missing IDs that are no longer present in saved Project/conversation source metadata are reported as **absent from saved source metadata**, never counted as completed network attempts. The last pass's breakdown is included in the privacy-safe diagnostic summary. A pass selecting 10 references may issue fewer than 10 download attempts.
+
+Optional browser request observation now records **literal boolean values only** for `inline` and `download_intent`, and an allowlist of **request header names** only (whether Authorization, workspace account ID, cookies, etc. were present). It never records header values, identifiers, filenames, raw URLs, or other query values. This allows comparison against the exporter's request structure without disclosing credentials.

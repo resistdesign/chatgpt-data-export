@@ -100,7 +100,7 @@ test('targeted recovery preserves valid assets, updates both markers, and does n
     const progress = new Progress(undefined, false);
     const recovered = await recoverMissingAssets(api, dir, progress, () => false, 2);
     assert.deepEqual(recovered, {
-      selected: 2, recovered: 2, stillMissing: 0, remainingInArchive: 0,
+      selected: 2, attempted: 2, unlisted: 0, recovered: 2, stillMissing: 0, remainingInArchive: 0,
     });
     assert.equal(paths.filter(path => path.startsWith('/backend-api/accounts/check')).length, 1);
     assert.ok(paths.every(path => path.startsWith('/backend-api/accounts/check') ||
@@ -147,6 +147,8 @@ test('bounded recovery does not touch more missing files than selected', async (
     };
     const first = await recoverMissingAssets(api, dir, new Progress(undefined, false), () => false, 1);
     assert.equal(first.selected, 1);
+    assert.equal(first.attempted, 1);
+    assert.equal(first.unlisted, 0);
     assert.equal(first.recovered, 1);
     assert.equal(first.remainingInArchive, 1);
     const p = await archive.read<{ missing: unknown[] }>(`${root}/projects/${project}/assets-index.json`);
@@ -182,5 +184,44 @@ test('sanitized diagnostics aggregate route failures without exposing source IDs
     assert.match(summary, /unrecognized route \/ default scope: permission_error x1/);
     assert.doesNotMatch(summary, /PRIVATE-TOKEN|client\.txt|file_project_asset|private\.example\.com|\/users\/alice/);
     assert.match(summary, /not unique files/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('missing ID absent from Project metadata does not count as an attempted download', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-unmatched-files-'));
+  try {
+    const { archive } = await fixture(dir);
+    const indexPath = `${root}/projects/${project}/assets-index.json`;
+    const indexBefore = await archive.read<{ files: unknown[]; names: unknown[]; missing: Array<{ id: string; reason: string }> }>(indexPath);
+    assert.ok(indexBefore);
+    // Old capture index contains file_project_asset, but current saved Project
+    // listing references an unrelated identifier. This must not count as a download.
+    const inventory = await archive.read<Inventory>(`${root}/inventory.json`);
+    assert.ok(inventory);
+    inventory.projects[0]!.files = [{ file_id: 'file_replacement_asset', name: 'new.txt' }];
+    await archive.json(`${root}/inventory.json`, inventory);
+    const beforeHash = await archive.fileHash(indexPath);
+    const requests: string[] = [];
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      get: async path => {
+        requests.push(path);
+        if (path.includes('accounts/check')) {
+          return { accounts: { [id]: { account: { account_id: id } } } };
+        }
+        throw new Error('No download request should be issued');
+      },
+      openFile: async path => { requests.push(path); throw new Error('No file request expected'); },
+    };
+    const result = await recoverMissingAssets(api, dir, new Progress(undefined, false), () => false, 1);
+    assert.deepEqual(result, {
+      selected: 1, attempted: 0, unlisted: 1, recovered: 0,
+      stillMissing: 1, remainingInArchive: 2,
+    });
+    assert.equal(await archive.fileHash(indexPath), beforeHash, 'untouched index remains byte-for-byte unchanged');
+    assert.equal(requests.length, 1, 'only a workspace authentication check is issued');
+    const diagnostic = await archiveDiagnosticText(dir);
+    assert.match(diagnostic, /1 selected, 0 attempted, 1 absent from saved source metadata/);
+    assert.doesNotMatch(diagnostic, /file_project_asset|file_replacement_asset/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

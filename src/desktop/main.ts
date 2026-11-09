@@ -255,7 +255,7 @@ async function runRecovery(): Promise<void> {
     const result = await recoverMissingAssets(client, state.output, progress, () => job.cancelled, 10);
     state.status = job.cancelled ? 'Recovery stopped; saved data retained' : 'Missing-file recovery pass finished';
     state.result = result.selected
-      ? `${result.recovered}/${result.selected} selected missing files recovered. ${result.remainingInArchive} missing file references remain in this archive.`
+      ? `${result.selected} selected, ${result.attempted} actually attempted, ${result.unlisted} absent from saved source metadata, ${result.recovered} recovered. ${result.remainingInArchive} missing file references remain.`
       : 'No missing files can be retried for the signed-in workspace.';
     event(state.result);
   } catch (error) {
