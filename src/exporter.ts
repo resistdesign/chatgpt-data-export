@@ -71,7 +71,8 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
   const account = await captureAccount(api, archive, workspace, progress);
   const projectMissing: string[] = [];
   const sharedFailures: string[] = [];
-  for (const project of inventory.projects) {
+  progress.set('Saving Project files', 0, inventory.projects.length, 'Checking Project metadata and attached files');
+  for (const [index, project] of inventory.projects.entries()) {
     const projectRoot = `${root}/projects/${project.id}`;
     const info = await archive.json(`${projectRoot}/info.json`, project.details ?? project.raw);
     let projectFiles: SavedFile[] = [];
@@ -82,6 +83,11 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
       if (assets.missing.length) projectMissing.push(project.id);
     }
     await archive.json(`${projectRoot}/manifest.json`, { files: [info, ...projectFiles] });
+    progress.set('Saving Project files', index + 1, inventory.projects.length,
+      `${index + 1} Projects checked; ${projectMissing.length} missing asset sets`);
+    if ((index + 1) % 10 === 0 || index + 1 === inventory.projects.length) {
+      progress.info(`Project files: ${index + 1}/${inventory.projects.length} checked; ${projectMissing.length} missing asset sets.`);
+    }
   }
   // Shared-only links may not have an owner conversation ID. Keep their raw listing
   // and attempt to capture the share itself without pretending it's a normal chat.
