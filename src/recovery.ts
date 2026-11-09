@@ -46,6 +46,10 @@ interface ScanResult {
 
 export interface RecoveryResult {
   selected: number;
+  /** IDs actually matched in saved source metadata and had a download pass. */
+  attempted: number;
+  /** IDs selected from old missing checkpoints but absent from saved source metadata. */
+  unlisted: number;
   recovered: number;
   stillMissing: number;
   remainingInArchive: number;
@@ -186,6 +190,11 @@ export async function inspectArchive(output: string): Promise<ArchiveOverview | 
 export async function archiveDiagnosticText(output: string): Promise<string> {
   const overview = await inspectArchive(output);
   if (!overview) return 'ChatGPT Data Export: no local archive inventory found.';
+  const archive = new Archive(output);
+  const latest = await archive.read<Partial<RecoveryResult>>('recovery-latest.json');
+  const latestLine = latest && Number.isInteger(latest.selected) && Number.isInteger(latest.attempted)
+    ? `Last recovery: ${latest.selected} selected, ${latest.attempted} attempted, ${latest.unlisted ?? 0} absent from saved source metadata, ${latest.recovered ?? 0} recovered`
+    : undefined;
   const categories = Object.entries(overview.blockers)
     .filter(([, count]) => count > 0)
     .map(([reason, count]) => `  ${reason}: ${count} file records`);
@@ -196,6 +205,7 @@ export async function archiveDiagnosticText(output: string): Promise<string> {
     `Workspaces: ${overview.workspaces}`,
     `Conversations: ${overview.recordedComplete} saved, ${overview.recordedPartial} partial, ${overview.notYetCaptured} not captured`,
     `Missing file references: ${overview.missingFiles}; Project files: ${overview.projectFilesMissing}`,
+    ...(latestLine ? [latestLine] : []),
     'Missing-record categories:', ...(categories.length ? categories : ['  none']),
     'Failed route attempts (not unique files):', ...(routes.length ? routes : ['  no route attempts recorded']),
     'Counts are from local checkpoint metadata, not a network or hash verification.',
@@ -226,7 +236,7 @@ export async function recoverMissingAssets(
     .sort((left, right) => Number(right.kind === 'project') - Number(left.kind === 'project'));
   if (!candidates.length) {
     progress.info('No recoverable missing-file records for the signed-in workspace.');
-    return { selected: 0, recovered: 0, stillMissing: 0, remainingInArchive: initial.overview.missingFiles };
+    return { selected: 0, attempted: 0, unlisted: 0, recovered: 0, stillMissing: 0, remainingInArchive: initial.overview.missingFiles };
   }
 
   // Rotate the small batch so a permanently denied asset cannot block later
@@ -253,6 +263,8 @@ export async function recoverMissingAssets(
   }
 
   let processed = 0;
+  let attempted = 0;
+  let unlisted = 0;
   let recovered = 0;
   progress.set('Recovering missing files', 0, selected.length, 'Using stored checkpoints; no conversation inventory requests');
   for (const group of groups.values()) {
@@ -262,6 +274,8 @@ export async function recoverMissingAssets(
     const root = `${base}/${kind === 'project' ? 'projects' : 'conversations'}/${safeId(ownerId)}`;
     const before = ids.size;
     let after = before;
+    let sourceAvailable = false;
+    let groupAttempted = 0;
     const onProgress = (asset: { processed: number; total: number; current: number; method: string }): void => {
       progress.set('Recovering missing files', processed + asset.processed, selected.length,
         `${kind === 'project' ? 'Project' : 'Conversation'} file ${asset.current}/${asset.total}: ${asset.method}`);
@@ -272,12 +286,20 @@ export async function recoverMissingAssets(
       if (marker && await archive.verified(marker.raw)) {
         const source = await archive.read<unknown>(marker.raw.path);
         if (source !== undefined) {
+          const previousAssets = await archive.read<{ names?: Array<{ id: string; name: string | null }> }>(
+            `${root}/assets-index.json`,
+          );
           const assets = await saveAssets(api, archive, workspace, root, source, {
             conversationId: ownerId,
             projectId: (await archive.read<Inventory>(`${base}/inventory.json`))?.conversations.find(chat => chat.id === ownerId)?.projectId,
             existing: marker.files, existingMissing: marker.missing,
+            existingNames: previousAssets?.names,
             onlyIds: ids, onProgress,
           });
+          sourceAvailable = true;
+          groupAttempted = assets.attempted;
+          attempted += assets.attempted;
+          unlisted += assets.unlisted;
           await archive.json(`${root}/complete.json`, {
             ...marker, files: assets.files, missing: assets.missing, completedAt: new Date().toISOString(),
           } satisfies CompletionMarker);
@@ -289,14 +311,21 @@ export async function recoverMissingAssets(
     } else {
       const inventory = await archive.read<Inventory>(`${base}/inventory.json`);
       const project = inventory?.projects.find(item => item.id === ownerId);
-      const previous = await archive.read<{ files: SavedFile[]; missing: Array<{ id: string; reason: string }> }>(
-        `${root}/assets-index.json`,
-      );
+      const previous = await archive.read<{
+        files: SavedFile[];
+        names?: Array<{ id: string; name: string | null }>;
+        missing: Array<{ id: string; reason: string }>;
+      }>(`${root}/assets-index.json`);
       if (project && previous) {
         const assets = await saveAssets(api, archive, workspace, root, project.details ?? project.raw, {
           projectId: ownerId, projectFiles: project.files, existing: previous.files,
-          existingMissing: previous.missing, onlyIds: ids, onProgress,
+          existingMissing: previous.missing, existingNames: previous.names,
+          onlyIds: ids, onProgress,
         });
+        sourceAvailable = true;
+        groupAttempted = assets.attempted;
+        attempted += assets.attempted;
+        unlisted += assets.unlisted;
         let manifest = await archive.read<{ files: SavedFile[] }>(`${root}/manifest.json`);
         if (!manifest || !Array.isArray(manifest.files)) {
           const info = await archive.json(`${root}/info.json`, project.details ?? project.raw);
@@ -307,18 +336,21 @@ export async function recoverMissingAssets(
         after = assets.missing.filter(item => ids.has(item.id)).length;
       }
     }
+    if (!sourceAvailable) unlisted += before;
     recovered += before - after;
     processed += before;
     progress.set('Recovering missing files', processed, selected.length,
-      `${processed} checked; ${recovered} recovered; ${processed - recovered} still unavailable`);
-    progress.info(`Recovery: ${processed}/${selected.length} checked; ${recovered} recovered.`);
+      `${processed} selected; ${attempted} attempted; ${unlisted} absent from saved metadata; ${recovered} recovered`);
+    progress.info(`Recovery: ${processed}/${selected.length} selected; ${attempted} attempted; ${unlisted} unmatched; ${recovered} recovered.`);
     await archive.journal(workspace.key, {
-      event: 'asset-recovery', kind, attempted: before, recovered: before - after,
+      event: 'asset-recovery', kind, selected: before,
+      attempted: groupAttempted,
+      recovered: before - after,
     });
   }
   const after = await scan(output);
   const result: RecoveryResult = {
-    selected: processed, recovered, stillMissing: processed - recovered,
+    selected: processed, attempted, unlisted, recovered, stillMissing: processed - recovered,
     remainingInArchive: after.overview?.missingFiles ?? 0,
   };
   await archive.json('recovery-latest.json', { ...result, at: new Date().toISOString() });
