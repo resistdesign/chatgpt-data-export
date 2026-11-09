@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ElectronSessionClient, validateApiPath, type AuthenticatedSession } from './electron-client.js';
-import { ApiError, ResourceDeniedError, SessionExpiredError, SessionCheckError } from './errors.js';
+import { ElectronSessionClient, retryAfterMs, validateApiPath, type AuthenticatedSession, type RequestTiming } from './electron-client.js';
+import { ApiError, ResourceDeniedError, SessionExpiredError, SessionCheckError, ExportCancelledError } from './errors.js';
+import { Progress } from './progress.js';
 
 const json = (data: unknown, status = 200): Response => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 
@@ -140,4 +141,129 @@ test('binary asset request never follows a redirected token to another origin', 
   const response = await client.openFile('/backend-api/files/file_one/download', 'account-1');
   assert.equal(response.status, 302);
   assert.equal(response.headers.get('location'), 'https://files.oaiusercontent.com/signed-asset');
+});
+
+
+test('Retry-After accepts seconds and HTTP dates, bounds malformed or extreme hints', () => {
+  const now = Date.parse('2026-11-09T08:00:00.000Z');
+  assert.equal(retryAfterMs('45', now), 45_000);
+  assert.equal(retryAfterMs('Mon, 09 Nov 2026 08:02:00 GMT', now), 120_000);
+  assert.equal(retryAfterMs('Mon, 09 Nov 2026 07:00:00 GMT', now), 0);
+  assert.equal(retryAfterMs('999999999', now), 60 * 60_000);
+  assert.equal(retryAfterMs('bogus', now), 0);
+  assert.equal(retryAfterMs(null, now), 0);
+});
+
+test('consecutive 429 responses use longer global cooldowns and honor server Retry-After', async () => {
+  let now = 0;
+  const timestamps: number[] = [];
+  const waits: string[] = [];
+  const timing: RequestTiming = {
+    now: () => now, sleep: async ms => { now += ms; }, random: () => 0,
+  };
+  let requests = 0;
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'token' });
+    timestamps.push(now);
+    requests++;
+    if (requests === 1) return new Response('{}', { status: 429, headers: { 'Retry-After': '45' } });
+    if (requests === 2) return new Response('{}', { status: 429 });
+    return json({ ok: true });
+  } };
+  const progress = new Progress(snapshot => {
+    if (snapshot.waiting) waits.push(snapshot.waiting);
+  }, false);
+  const client = new ElectronSessionClient(session, 1000, progress, timing);
+  await client.authenticated();
+  assert.deepEqual(await client.get('/backend-api/conversations/chat_one'), { ok: true });
+  assert.deepEqual(timestamps, [0, 45_000, 105_000],
+    'first 429 obeys server 45s; second response extends shared pause by 60s');
+  assert.ok(waits.some(message => message.includes('Rate-limit pause')),
+    'rate-limit waits should have a distinct label');
+});
+
+test('a second worker rechecks shared cooldown after it starts waiting', async () => {
+  let now = 0;
+  let releaseFirstWait: (() => void) | undefined;
+  let announceWaiting!: () => void;
+  const waiting = new Promise<void>(resolve => { announceWaiting = resolve; });
+  let announceThrottle!: () => void;
+  const throttled = new Promise<void>(resolve => { announceThrottle = resolve; });
+  let firstSleep = true;
+  const timing: RequestTiming = {
+    now: () => now, random: () => 0,
+    sleep: async ms => {
+      if (firstSleep) {
+        firstSleep = false;
+        announceWaiting();
+        await new Promise<void>(resolve => { releaseFirstWait = resolve; });
+      }
+      now += ms;
+    },
+  };
+  let completeFirstRequest!: () => void;
+  const firstResponse = new Promise<Response>(resolve => {
+    completeFirstRequest = () => resolve(new Response('{}', { status: 429 }));
+  });
+  const timestamps: Array<{ path: string; at: number }> = [];
+  let firstA = true;
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'token' });
+    const path = new URL(url).pathname;
+    timestamps.push({ path, at: now });
+    if (path.endsWith('/chat_a') && firstA) {
+      firstA = false;
+      return firstResponse;
+    }
+    return json({ ok: true });
+  } };
+  const progress = new Progress(snapshot => {
+    if (snapshot.message?.includes('HTTP 429')) announceThrottle();
+  }, false);
+  const client = new ElectronSessionClient(session, 1000, progress, timing);
+  await client.authenticated();
+  const a = client.get('/backend-api/conversations/chat_a');
+  const b = client.get('/backend-api/conversations/chat_b');
+  await waiting;
+  completeFirstRequest();
+  await throttled;
+  releaseFirstWait?.();
+  await Promise.all([a, b]);
+  const bRequest = timestamps.find(item => item.path.endsWith('/chat_b'));
+  assert.ok(bRequest);
+  assert.ok(bRequest.at >= 30_000,
+    'second worker must not use the 1s admission deadline calculated before the first 429');
+});
+
+test('cancellation interrupts a shared backoff without any more file requests', async () => {
+  let now = 0;
+  let releaseWait!: () => void;
+  let signalWait!: () => void;
+  const waitStarted = new Promise<void>(resolve => { signalWait = resolve; });
+  let paused = false;
+  const timing: RequestTiming = {
+    now: () => now, random: () => 0,
+    sleep: async ms => {
+      if (!paused) {
+        paused = true;
+        signalWait();
+        await new Promise<void>(resolve => { releaseWait = resolve; });
+      }
+      now += ms;
+    },
+  };
+  let requests = 0;
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'token' });
+    requests++;
+    return new Response('{}', { status: 429 });
+  } };
+  const client = new ElectronSessionClient(session, 1000, undefined, timing);
+  await client.authenticated();
+  const attempt = client.get('/backend-api/conversations/chat_one');
+  await waitStarted;
+  client.cancel();
+  releaseWait();
+  await assert.rejects(attempt, error => error instanceof ExportCancelledError);
+  assert.equal(requests, 1, 'cancelled request must not retry after the rate-limit pause');
 });
