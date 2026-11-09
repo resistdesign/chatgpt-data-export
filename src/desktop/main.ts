@@ -7,7 +7,7 @@ import { ElectronSessionClient } from '../electron-client.js';
 import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
 import { SessionExpiredError, SessionCheckError, ExportCancelledError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
-import { inspectArchive, archiveDiagnosticText, missingProjectFilePairs, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
+import { inspectArchive, archiveDiagnosticText, missingProjectFilePairs, findMissingProjectExample, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
 import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames, matchesMissingProjectFile, type ObservedFileRequest } from './request-observer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,14 +27,14 @@ interface UiState {
   archive: ArchiveOverview | null;
   archiveLoading: boolean;
   archiveError: string | null;
-  fileObservation: { active: boolean; requests: ObservedFileRequest[] };
+  fileObservation: { active: boolean; requests: ObservedFileRequest[]; example: { projectName: string; fileName: string } | null };
 }
 
 const state: UiState = {
   signedIn: false, output: join(homedir(), 'ChatGPT-Data-Export'), running: false,
   activity: 'idle', status: 'Ready to connect', error: null, progress: null, result: null, events: [],
   archive: null, archiveLoading: true, archiveError: null,
-  fileObservation: { active: false, requests: [] },
+  fileObservation: { active: false, requests: [], example: null },
 };
 let dashboard: BrowserWindow | null = null;
 let signInWindow: BrowserWindow | null = null;
@@ -126,8 +126,13 @@ async function toggleFileObservation(): Promise<void> {
     stopFileObservation();
     return;
   }
-  const missingPairs = await missingProjectFilePairs(state.output);
-  state.fileObservation = { active: true, requests: [] };
+  const [missingPairs, example] = await Promise.all([
+    missingProjectFilePairs(state.output), findMissingProjectExample(state.output),
+  ]);
+  state.fileObservation = {
+    active: true, requests: [],
+    example: example ? { projectName: example.projectName, fileName: example.fileName } : null,
+  };
   const filter = { urls: ['https://chatgpt.com/backend-api/*'] };
   const network = session.fromPartition(PARTITION).webRequest;
   observedHeaderNames.clear();
@@ -156,15 +161,20 @@ async function toggleFileObservation(): Promise<void> {
     state.fileObservation.requests = [...state.fileObservation.requests, safeItem].slice(-30);
     broadcast();
   });
-  openSignIn();
-  event('Observe mode enabled. In the ChatGPT window, open a Project and click Download on one file. Return here and stop observation.');
+  openSignIn(example ? `https://chatgpt.com/g/${encodeURIComponent(example.projectId)}` : CHATGPT);
+  event('Observe mode enabled. Try downloading the Project attachment named in the dashboard; only redacted request details are retained.');
 }
 
 function isHttps(input: string): boolean {
   try { return new URL(input).protocol === 'https:'; } catch { return false; }
 }
-function openSignIn(): void {
-  if (signInWindow && !signInWindow.isDestroyed()) { signInWindow.focus(); return; }
+function openSignIn(targetUrl = CHATGPT): void {
+  if (signInWindow && !signInWindow.isDestroyed()) {
+    signInWindow.focus();
+    if (targetUrl !== CHATGPT) void signInWindow.loadURL(targetUrl)
+      .catch(err => { event(`Could not open selected Project: ${description(err)}`); });
+    return;
+  }
   const win = new BrowserWindow({
     title: 'Sign in to ChatGPT', width: 1040, height: 850, minWidth: 600, minHeight: 520,
     show: true, backgroundColor: '#141821',
@@ -183,7 +193,7 @@ function openSignIn(): void {
   const refresh = (): void => { void authenticate().then(ok => { if (ok) event('Signed in to ChatGPT. This app will retain its session between launches.'); }); };
   win.webContents.on('did-finish-load', refresh);
   win.on('closed', () => { stopFileObservation(); signInWindow = null; void authenticate(); });
-  void win.loadURL(CHATGPT).catch(err => { event(`Sign-in page failed to load: ${description(err)}`); });
+  void win.loadURL(targetUrl).catch(err => { event(`Sign-in page failed to load: ${description(err)}`); });
 }
 
 async function saveSettings(): Promise<void> {

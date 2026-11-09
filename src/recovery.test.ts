@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Archive, workspaceKey, type CompletionMarker } from './archive.js';
-import { archiveDiagnosticText, inspectArchive, recoverMissingAssets } from './recovery.js';
+import { archiveDiagnosticText, inspectArchive, findMissingProjectExample, missingProjectFilePairs, recoverMissingAssets } from './recovery.js';
 import { Progress } from './progress.js';
 import type { Inventory } from './discovery.js';
 import type { ChatGptApi } from './api-types.js';
@@ -223,5 +223,22 @@ test('missing ID absent from Project metadata does not count as an attempted dow
     const diagnostic = await archiveDiagnosticText(dir);
     assert.match(diagnostic, /1 selected, 0 attempted, 1 absent from saved source metadata/);
     assert.doesNotMatch(diagnostic, /file_project_asset|file_replacement_asset/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('offline selector identifies an actual missing Project file without copying IDs', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-exact-compare-'));
+  try {
+    await fixture(dir);
+    const target = await findMissingProjectExample(dir);
+    assert.deepEqual(target, {
+      projectId: project, projectName: 'Project with missing file',
+      fileName: 'document.txt',
+    });
+    const pairs = await missingProjectFilePairs(dir);
+    assert.equal(pairs.has(project + '\0' + 'file_project_asset'), true);
+    assert.equal(pairs.has(project + '\0' + 'file_other_asset'), false);
+    const summary = await archiveDiagnosticText(dir);
+    assert.doesNotMatch(summary, /document\.txt|g-p-test|file_project_asset/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

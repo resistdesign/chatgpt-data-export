@@ -32,6 +32,7 @@ interface UiState {
       headerNames?: string[];
       matchesArchivedMissingProjectFile?: boolean;
     }>;
+    example: { projectName: string; fileName: string } | null;
   };
 }
 interface AppBridge {
@@ -93,11 +94,15 @@ function render(state: UiState): void {
   observe.disabled = state.running;
   observe.textContent = state.fileObservation.active ? 'Stop observing download' : 'Observe one ChatGPT download';
   const observed = state.fileObservation.requests;
+  const target = state.fileObservation.example;
+  const targetHint = target
+    ? `Target file: "${target.fileName}" in Project "${target.projectName}". `
+    : '';
   text('observation-status', state.fileObservation.active
-    ? `Observing this app's ChatGPT window. ${observed.length} file requests captured. Click a Project file's Download control in ChatGPT, then stop observing.`
+    ? `${targetHint}Observing ChatGPT's window: ${observed.length} file requests captured. Try downloading that file, then stop observing.`
     : observed.length
-      ? `${observed.length} sanitized file API responses captured. Use Copy safe diagnostic summary to share the results.`
-      : 'Optional: observe a real Project download in the app-owned ChatGPT window to identify the correct API route. Only route shapes and HTTP statuses are collected.');
+      ? `${targetHint}${observed.length} sanitized file API responses captured. Copy safe diagnostic summary to share the comparison.`
+      : 'Optional: observe a real Project file in ChatGPT. Only route shapes, safe flags and header presence are copied.');
   (el('copy-diagnostics') as HTMLButtonElement).disabled = state.running ||
     state.archiveLoading || !saved || saved.missingFiles === 0;
   (el('retry-missing') as HTMLButtonElement).disabled = state.running || !state.signedIn ||
