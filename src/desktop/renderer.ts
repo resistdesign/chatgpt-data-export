@@ -48,7 +48,7 @@ function render(state: UiState): void {
   text('stage', state.status);
   const progress = state.progress;
   text('counter', progress?.total
-    ? `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} ${progress.stage === 'Capturing' ? 'attempted' : 'processed'}`
+    ? `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} processed`
     : state.running ? 'Working…' : '—');
   (el('progress-bar') as HTMLElement).style.width = progress?.total ? `${Math.max(0, Math.min(100, 100 * progress.done / progress.total))}%` : '0%';
   text('detail', progress ? [progress.stage, progress.note].filter(Boolean).join(' · ') : 'No export running');
