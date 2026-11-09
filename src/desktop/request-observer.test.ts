@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeFileRequest, formatObservedRequests } from './request-observer.js';
+import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames } from './request-observer.js';
 
 test('sanitizes real-looking project download route and removes all values', () => {
   const fileId = 'file_PRIVATE_CUSTOMER_NOTES';
@@ -12,6 +12,7 @@ test('sanitizes real-looking project download route and removes all values', () 
   assert.deepEqual(observed, {
     route: '/backend-api/files/download/{file-id}', method: 'GET',
     queryKeys: ['download_intent', 'gizmo_id'], otherQueryKeys: 1, status: 'HTTP 200',
+    booleans: { download_intent: true },
   });
   const summary = formatObservedRequests([observed!]).join('\n');
   assert.doesNotMatch(summary, /PRIVATE|SECRET|secret_key|true/);
@@ -45,4 +46,37 @@ test('invalid URLs and unauthorized origins are ignored', () => {
   assert.equal(summarizeFileRequest('http://chatgpt.com/backend-api/files/download/file_x', 200), null);
   assert.equal(summarizeFileRequest('https://chatgpt.com.evil.com/backend-api/files/download/file_x', 200), null);
   assert.equal(summarizeFileRequest('https://chatgpt.com/backend-api/files/download/file_x', 0)?.status, 'unknown');
+});
+
+test('safe boolean flags and header presence are observable but secret values never retained', () => {
+  const headers = {
+    Authorization: 'Bearer SECRET_TOKEN', 'ChatGPT-Account-ID': 'account_SECRET',
+    Cookie: 'private=SECRET', 'X-Secret-Customer': 'SECRET',
+    Accept: 'application/json',
+  };
+  const names = safeRequestHeaderNames(headers);
+  assert.deepEqual(names, ['accept', 'authorization', 'chatgpt-account-id', 'cookie']);
+  const observed = summarizeFileRequest(
+    'https://chatgpt.com/backend-api/files/download/file_PRIVATE?' +
+      'gizmo_id=g-p-PRIVATE&inline=true&download_intent=false&secret=HIDDEN',
+    403, 'GET', names,
+  );
+  assert.deepEqual(observed?.booleans, { inline: true, download_intent: false });
+  const summary = formatObservedRequests([observed!]).join('\n');
+  assert.match(summary, /inline=true/);
+  assert.match(summary, /download_intent=false/);
+  assert.match(summary, /headers present: accept, authorization, chatgpt-account-id, cookie/);
+  assert.doesNotMatch(summary, /SECRET|PRIVATE|HIDDEN|X-Secret-Customer|g-p-PRIVATE/);
+});
+
+test('invalid boolean flags and unrecognized header names are never copied', () => {
+  const observed = summarizeFileRequest(
+    'https://chatgpt.com/backend-api/files/download/file_PRIVATE?' +
+    'inline=SECRET&download_intent=SECRET&signature=HIDDEN',
+    200, 'GET', ['Authorization', 'x-secret-value', 'Cookie'],
+  );
+  assert.equal(observed?.booleans, undefined);
+  const summary = formatObservedRequests([observed!]).join('\n');
+  assert.doesNotMatch(summary, /SECRET|PRIVATE|HIDDEN|x-secret/);
+  assert.match(summary, /headers present: authorization, cookie/);
 });

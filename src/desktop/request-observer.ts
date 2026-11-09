@@ -11,6 +11,10 @@ export interface ObservedFileRequest {
   queryKeys: string[];
   otherQueryKeys: number;
   status: string;
+  /** Only literal true/false values. Opaque values are never retained. */
+  booleans?: { inline?: boolean; download_intent?: boolean };
+  /** Allowlisted header names only. Header values are discarded. */
+  headerNames?: string[];
 }
 const knownQueryKeys = new Set([
   'gizmo_id', 'conversation_id', 'check_context_scopes_for_conversation_id',
@@ -18,10 +22,21 @@ const knownQueryKeys = new Set([
   'file_id', 'limit', 'offset', 'cursor', 'id',
 ]);
 
+const allowedHeaderNames = new Set([
+  'authorization', 'chatgpt-account-id', 'cookie', 'origin',
+  'referer', 'accept', 'content-type', 'x-requested-with',
+]);
+export function safeRequestHeaderNames(headers: Record<string, unknown> | undefined): string[] {
+  return [...new Set(Object.keys(headers ?? {})
+    .map(key => key.toLowerCase())
+    .filter(name => allowedHeaderNames.has(name)))].sort();
+}
+
 export function summarizeFileRequest(
   input: string,
   statusCode: number,
   requestMethod = 'GET',
+  headerNames: readonly string[] = [],
 ): ObservedFileRequest | null {
   let url: URL;
   try { url = new URL(input); } catch { return null; }
@@ -51,13 +66,29 @@ export function summarizeFileRequest(
   const method = requestMethod === 'GET' || requestMethod === 'POST' ? requestMethod : 'other';
   const status = Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
     ? 'HTTP ' + statusCode : 'unknown';
-  return { route, method, queryKeys, otherQueryKeys, status };
+  const booleans: NonNullable<ObservedFileRequest['booleans']> = {};
+  for (const key of ['inline', 'download_intent'] as const) {
+    const value = url.searchParams.get(key);
+    if (value === 'true' || value === 'false') booleans[key] = value === 'true';
+  }
+  const safeNames = [...new Set(headerNames
+    .map(name => name.toLowerCase()).filter(name => allowedHeaderNames.has(name)))].sort();
+  return {
+    route, method, queryKeys, otherQueryKeys, status,
+    ...(Object.keys(booleans).length ? { booleans } : {}),
+    ...(safeNames.length ? { headerNames: safeNames } : {}),
+  };
 }
 
 export function formatObservedRequests(requests: ReadonlyArray<ObservedFileRequest>): string[] {
   return requests.map((request, index) => {
     const params = request.queryKeys.length ? request.queryKeys.join(', ') : 'none';
     const extra = request.otherQueryKeys ? ` + ${request.otherQueryKeys} other key(s)` : '';
-    return `${index + 1}. ${request.method} ${request.route} [${params}${extra}] ${request.status}`;
+    const flags = request.booleans
+      ? Object.entries(request.booleans).map(([key, value]) => `${key}=${value}`).join(', ')
+      : '';
+    const headers = request.headerNames?.length ? request.headerNames.join(', ') : '';
+    return `${index + 1}. ${request.method} ${request.route} [${params}${extra}] ${request.status}` +
+      (flags ? ` | flags: ${flags}` : '') + (headers ? ` | headers present: ${headers}` : '');
   });
 }
