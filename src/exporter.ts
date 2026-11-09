@@ -166,8 +166,14 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
       captureProgress(`Checking conversation ${current + 1}/${selected.length} and its saved checkpoint`);
       const conversationRoot = `${root}/conversations/${item.id}`;
       try {
-        if (await archive.canSkip(workspace.key, item.id, item.updated, options.assets)) { skipped++; completed++; }
-        else {
+        if (await archive.canSkip(workspace.key, item.id, item.updated, options.assets)) {
+          const priorMarker = await archive.marker(workspace.key, item.id);
+          skipped++;
+          completed++;
+          // A reusable RAW checkpoint can still have missing attachments.
+          // It must not be counted as fully saved during history-first runs.
+          if (priorMarker?.missing.length) partial++;
+        } else {
           const prior = await archive.marker(workspace.key, item.id);
           const reusable = prior?.updated === item.updated && await archive.verified(prior.raw);
           const source = reusable ? await archive.read<unknown>(prior.raw.path) : await readDetail(api, workspace, item.id);
