@@ -1,7 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { Archive, safeId, type CompletionMarker, type SavedFile } from './archive.js';
 import { saveAssets } from './assets.js';
-import { discoverWorkspaces, type Inventory, type Workspace } from './discovery.js';
+import { discoverWorkspaces, record, str, type Inventory, type Workspace } from './discovery.js';
 import { ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import type { Progress } from './progress.js';
@@ -192,6 +192,44 @@ export async function missingProjectFilePairs(output: string): Promise<ReadonlyS
   const result = await scan(output);
   return new Set(result.targets.filter(target => target.kind === 'project')
     .map(target => `${target.ownerId}\0${target.fileId}`));
+}
+
+/** The selected file name appears only in the user's local dashboard. */
+export interface MissingProjectExample {
+  projectId: string;
+  projectName: string;
+  fileName: string;
+}
+/**
+ * Select a saved missing Project file that still has an identifiable source
+ * listing. This helps compare the exact SAME file in ChatGPT's browser UI.
+ * Never include names or IDs in the copied safe diagnostics.
+ */
+export async function findMissingProjectExample(output: string): Promise<MissingProjectExample | null> {
+  const archive = new Archive(output);
+  const { targets } = await scan(output);
+  for (const target of targets) {
+    if (target.kind !== 'project') continue;
+    const inventory = await archive.read<Inventory>(`workspaces/${target.workspaceKey}/inventory.json`);
+    const project = inventory?.projects.find(p => p.id === target.ownerId);
+    if (!project) continue;
+    const file = project.files.map(record)
+      .find(item => (str(item.file_id) ?? str(item.id)) === target.fileId);
+    if (!file) continue;
+    const details = record(project.details);
+    const info = record(project.raw);
+    const projectData = record(details.gizmo);
+    const rawGizmo = record(info.gizmo);
+    const rawInner = record(rawGizmo.gizmo);
+    const display = record(projectData.display);
+    const fallbackDisplay = record(rawInner.display);
+    return {
+      projectId: target.ownerId,
+      projectName: str(display.name) ?? str(fallbackDisplay.name) ?? 'Project with missing file',
+      fileName: str(file.name) ?? str(file.file_name) ?? 'Unnamed attachment',
+    };
+  }
+  return null;
 }
 
 /**
