@@ -92,7 +92,7 @@ function render(state: UiState): void {
     : 'No per-route diagnostics recorded yet.');
   const observe = el('observe-file') as HTMLButtonElement;
   observe.disabled = state.running;
-  observe.textContent = state.fileObservation.active ? 'Stop observing download' : 'Observe one ChatGPT download';
+  observe.textContent = state.fileObservation.active ? 'Stop observing download' : 'Observe a missing Project file';
   const observed = state.fileObservation.requests;
   const target = state.fileObservation.example;
   const targetHint = target
