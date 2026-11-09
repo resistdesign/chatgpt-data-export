@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import { RateLimitExhausted, SessionExpiredError, SessionCheckError } from './errors.js';
+import { RateLimitExhausted, SessionExpiredError, SessionCheckError, ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import { Archive, safeId, type SavedFile } from './archive.js';
 import { collectAssets, record, str, type AssetReference, type Workspace } from './discovery.js';
@@ -84,7 +84,7 @@ export async function saveAssets(
       if (!downloaded) throw new Error('Asset fetch retry limit reached');
       files.push(downloaded);
     } catch (error) {
-      if (error instanceof RateLimitExhausted || error instanceof SessionExpiredError || error instanceof SessionCheckError) throw error;
+      if (error instanceof RateLimitExhausted || error instanceof SessionExpiredError || error instanceof SessionCheckError || error instanceof ExportCancelledError) throw error;
       missing.push({ id: ref.id, reason: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200) });
     }
   }
