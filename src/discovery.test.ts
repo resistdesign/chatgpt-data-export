@@ -35,6 +35,35 @@ test('inventory joins main, archived, Project and shared-only listings', async (
   assert.equal(inventory.scopes.projects, 'complete');
 });
 
+test('Project inventory reports incremental progress and activity for each sidebar page', async () => {
+  const updates: Array<{ stage: string; done: number; total: number; message?: string }> = [];
+  const progress = new Progress(update => {
+    updates.push({ stage: update.stage, done: update.done, total: update.total, message: update.message });
+  }, false);
+  const api = mock(path => {
+    if (path.startsWith('/backend-api/conversations?')) return { items: [] };
+    if (path.includes('snorlax/sidebar')) return {
+      items: [
+        { gizmo: { gizmo: { id: 'g-p-one' }, files: [] } },
+        { gizmo: { gizmo: { id: 'g-p-two' }, files: [] } },
+        { gizmo: { gizmo: { id: 'gpt-custom' }, files: [] } },
+      ],
+      cursor: null,
+    };
+    if (path.includes('/gizmos/g-p-one/conversations')) return { items: [{ id: 'chat_one' }] };
+    if (path.includes('/gizmos/g-p-two/conversations')) return { items: [{ id: 'chat_two' }] };
+    if (path.includes('/gizmos/g-p-')) return { files: [] };
+    if (path.includes('shared_conversations')) return { items: [] };
+    throw new Error('Unexpected path ' + path);
+  });
+  const inventory = await buildInventory(api, workspace, progress);
+  assert.equal(inventory.projects.length, 2);
+  const projectUpdates = updates.filter(update => update.stage === 'Inventory projects' && update.total === 2);
+  assert.ok(projectUpdates.some(update => update.done === 1), 'first Project becomes visible before the second completes');
+  assert.ok(projectUpdates.some(update => update.done === 2), 'sidebar page reaches 100% after both Projects');
+  assert.ok(updates.some(update => update.message?.includes('Project inventory completed: 2 Projects')));
+});
+
 test('modern conversation pagination preserves every source page', async () => {
   const api = mock(path => {
     if (path.includes('/messages?')) return { messages: [{ id: 'old', content: { parts: ['hello'] } }], page_info: { has_previous_page: false, has_next_page: true } };
