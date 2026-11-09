@@ -57,6 +57,7 @@ test('a denied conversation does not abort other chats and the progress bar coun
     const updates: Array<{ stage: string; done: number; total: number; note: string; message?: string }> = [];
     const progress = new Progress(state => { updates.push(state); }, false);
     const api: ChatGptApi = {
+      cancel: () => undefined,
       get: async path => {
         if (path.includes('chat_denied')) throw new ResourceDeniedError(path);
         if (path.startsWith('/backend-api/conversations/chat_allowed')) {
