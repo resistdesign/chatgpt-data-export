@@ -90,7 +90,9 @@ test('full history-first export reuses partial checkpoints, saves new raw chats,
           };
         }
         if (path.startsWith('/public-api/gizmos/discovery/mine')) return { items: [] };
-        if (path.startsWith('/backend-api/files/')) throw new Error('File endpoint must not be contacted');
+        if (path.startsWith('/backend-api/files/') && path !== '/backend-api/files/library') {
+          throw new Error('File download endpoint must not be contacted');
+        }
         return {};
       },
       openFile: async () => { throw new Error('Binary download must not be attempted'); },
@@ -107,7 +109,8 @@ test('full history-first export reuses partial checkpoints, saves new raw chats,
     assert.deepEqual(report.projectMissing, ['g-p-one']);
     assert.ok(requests.some(path => path.includes('chat_new')));
     assert.equal(requests.filter(path => path.includes('chat_saved') || path.includes('chat_partial')).length, 0);
-    assert.equal(requests.filter(path => path.startsWith('/backend-api/files/')).length, 0);
+    assert.equal(requests.filter(path => path.startsWith('/backend-api/files/') &&
+      path !== '/backend-api/files/library').length, 0);
     const partial = await archive.marker(workspace.key, 'chat_partial');
     assert.equal(partial?.missing[0]?.reason, 'HTTP 403');
     const created = await archive.marker(workspace.key, 'chat_new');
