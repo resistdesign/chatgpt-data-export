@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Archive } from './archive.js';
-import { ResourceDeniedError, SessionExpiredError } from './errors.js';
+import { ExportCancelledError, ResourceDeniedError, SessionExpiredError } from './errors.js';
 import { exportWorkspace } from './exporter.js';
 import { Progress } from './progress.js';
 import type { ChatGptApi } from './api-types.js';
@@ -79,5 +79,66 @@ test('a denied conversation does not abort other chats and the progress bar coun
     assert.match(last?.note ?? '', /2 attempted; 1 complete; 0 partial; 0 reused; 1 errors/);
     assert.ok(updates.some(update => update.message?.includes('failed (HTTP 401)')));
     assert.equal(await archive.canSkip(workspace.key, 'chat_allowed', 1, true), true);
+  } finally { await rm(output, { recursive: true, force: true }); }
+});
+
+test('one fatal HTTP 401 keeps the original cause and never journals cancellation fallout', async () => {
+  const output = await mkdtemp(join(tmpdir(), 'cde-cancel-cascade-'));
+  try {
+    const workspace = { key: 'account_sample', id: 'workspace_test', label: 'Test', kind: 'business' };
+    const archive = new Archive(output);
+    const inventory: Inventory = {
+      schema: 1, generatedAt: new Date().toISOString(),
+      conversations: [
+        { id: 'chat_expired', title: 'Expired', updated: 1 },
+        { id: 'chat_inflight', title: 'In flight', updated: 1 },
+        { id: 'chat_unstarted', title: 'Not started', updated: 1 },
+      ],
+      projects: [], shared: [], warnings: [],
+      scopes: { main: 'complete', archived: 'complete', projects: 'complete', shared: 'complete' },
+    };
+    await archive.json(`workspaces/${workspace.key}/inventory.json`, inventory);
+
+    let cancelled = false;
+    let releaseInFlight: (() => void) | undefined;
+    const requests: string[] = [];
+    const endpoint = '/backend-api/conversations/chat_expired?include_has_versions=true&num_turns=100';
+    const api: ChatGptApi = {
+      get: async path => {
+        if (path.includes('chat_expired')) {
+          await new Promise<void>(resolve => { setImmediate(resolve); });
+          throw new SessionExpiredError(path);
+        }
+        if (path.includes('chat_inflight')) {
+          requests.push('inflight');
+          await new Promise<void>(resolve => { releaseInFlight = resolve; });
+          if (cancelled) throw new ExportCancelledError();
+          throw new Error('This request was supposed to be cancelled');
+        }
+        if (path.includes('chat_unstarted')) requests.push('unstarted');
+        if (path.startsWith('/public-api/gizmos/discovery/mine')) return { items: [] };
+        return {};
+      },
+      cancel: () => { cancelled = true; releaseInFlight?.(); },
+    };
+
+    await assert.rejects(exportWorkspace(api, archive, workspace, new Progress(undefined, false),
+      { output, concurrency: 2, assets: true, max: undefined, refresh: false }, () => cancelled),
+    error => error instanceof SessionExpiredError && error.endpoint === endpoint);
+
+    assert.deepEqual(requests, ['inflight'], 'a third conversation must never start');
+    const interrupted = await archive.read<{
+      attempted: number;
+      failed: Array<{ id: string }>;
+      cause: { name: string; httpStatus: number; endpoint: string };
+    }>(`workspaces/${workspace.key}/interrupted.json`);
+    assert.equal(interrupted?.attempted, 0, 'cancelled requests are not completed or failed attempts');
+    assert.deepEqual(interrupted?.failed, [], 'do not record spurious conversation failures');
+    assert.deepEqual(interrupted?.cause, {
+      name: 'SessionExpiredError', httpStatus: 401, endpoint,
+    });
+    const journal = await readFile(archive.path(`workspaces/${workspace.key}/journal.jsonl`), 'utf8')
+      .catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? '' : Promise.reject(error));
+    assert.doesNotMatch(journal, /"event":"error"/);
   } finally { await rm(output, { recursive: true, force: true }); }
 });
