@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError } from './errors.js';
+import { ApiError, ResourceDeniedError, SessionExpiredError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import { buildInventory, discoverWorkspaces, readDetail } from './discovery.js';
 import { Progress } from './progress.js';
@@ -87,4 +87,26 @@ test('legacy graph fallback preserves raw branches', async () => {
 test('invalid pagination cursor is rejected, not mistaken for completion', async () => {
   const api = mock(() => ({ id: 'chat_3', messages: [{ id: 'one' }], page_info: { has_previous_page: true, has_next_page: false } }));
   await assert.rejects(readDetail(api, workspace, 'chat_3'), /pagination stuck/);
+});
+
+test('legacy conversation fallback works when newer endpoint denies an otherwise accessible chat', async () => {
+  const api = mock(path => {
+    if (path.startsWith('/backend-api/conversations/')) throw new ResourceDeniedError(path);
+    if (path.startsWith('/backend-api/conversation/')) {
+      return { id: 'chat_archived', mapping: { root: { children: [] } } };
+    }
+    throw new Error('Unexpected path ' + path);
+  });
+  const result = await readDetail(api, workspace, 'chat_archived') as { transport: string };
+  assert.equal(result.transport, 'legacy-graph');
+});
+
+test('expired login still aborts conversation access instead of attempting legacy fallback', async () => {
+  let requests = 0;
+  const api = mock(path => {
+    requests++;
+    throw new SessionExpiredError(path);
+  });
+  await assert.rejects(readDetail(api, workspace, 'chat_any'), error => error instanceof SessionExpiredError);
+  assert.equal(requests, 1);
 });
