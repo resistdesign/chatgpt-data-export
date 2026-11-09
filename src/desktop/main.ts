@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { ElectronSessionClient } from '../electron-client.js';
 import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
-import { SessionExpiredError, SessionCheckError } from '../errors.js';
+import { SessionExpiredError, SessionCheckError, ExportCancelledError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
 import { inspectArchive, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
 
@@ -205,14 +205,21 @@ async function runRecovery(): Promise<void> {
       : 'No missing files can be retried for the signed-in workspace.';
     event(state.result);
   } catch (error) {
-    if (error instanceof SessionExpiredError) {
+    if (job.cancelled || error instanceof ExportCancelledError) {
+      state.status = 'Recovery stopped; saved data retained';
+      state.error = null;
+      state.result = 'Recovery stopped. Previously saved checkpoints are still available.';
+      event(state.result);
+    } else if (error instanceof SessionExpiredError) {
       state.signedIn = false;
       state.status = 'ChatGPT sign-in expired; saved data retained';
+      state.error = 'Sign in to ChatGPT again, then resume recovery.';
+      event(state.error);
     } else {
-      state.status = job.cancelled ? 'Recovery stopped; saved data retained' : 'Recovery interrupted';
+      state.status = 'Recovery interrupted';
+      state.error = description(error);
+      event(`Recovery interrupted: ${state.error}. Existing checkpoints were not removed.`);
     }
-    state.error = description(error);
-    event(`Recovery interrupted: ${state.error}. Existing checkpoints were not removed.`);
   } finally { progress.stop(); finishJob(); void refreshArchiveOverview(); }
 }
 
