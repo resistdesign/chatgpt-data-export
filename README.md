@@ -91,3 +91,7 @@ The archive engine (`src/exporter.ts`, `src/archive.ts`, `src/discovery.ts`, `sr
 ## Project status and upstream inspiration
 
 Version 0.2.0 is **not production certified**. The engine uses private APIs that can change at any time; check the account coverage reports. Source inspiration and endpoint research came from [CodingCat AI Chat Exporter](https://github.com/nikolaylosev/ai-chat-exporter), [ChatGPT Markdown Export](https://github.com/thekester/chatgpt-export) and [ChatGPTExporter Community](https://github.com/Trojon99/ChatGPTExporter-Community). No code from those projects was copied. This project isn't affiliated with OpenAI.
+
+### Reading progress
+
+The progress bar represents **attempts finished in the current stage**, not a promise that every file was recovered. During conversation capture, the dashboard separately shows **fully saved**, **partial**, **failed**, **reused** (a subset of fully saved), and **active**. The `x/y attempted` count can reach `y/y` even when the archive is partial, and the report will say so. The clock shows total runtime and time spent in the current stage separately; we don't predict completion time while retrying unpredictable file downloads. Request cooldowns appear on their own line and never replace the capture statistics.

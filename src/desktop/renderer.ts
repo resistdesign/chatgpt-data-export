@@ -48,13 +48,24 @@ function render(state: UiState): void {
   text('stage', state.status);
   const progress = state.progress;
   text('counter', progress?.total
-    ? `${progress.done.toLocaleString()}/${progress.total.toLocaleString()}${progress.stage === 'Capturing' ? ' complete' : ' processed'}`
+    ? `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} ${progress.stage === 'Capturing' ? 'attempted' : 'processed'}`
     : state.running ? 'Working…' : '—');
   (el('progress-bar') as HTMLElement).style.width = progress?.total ? `${Math.max(0, Math.min(100, 100 * progress.done / progress.total))}%` : '0%';
   text('detail', progress ? [progress.stage, progress.note].filter(Boolean).join(' · ') : 'No export running');
   text('elapsed', progress
-    ? `${duration(progress.seconds)} · ${state.running ? (progress.etaSeconds === null ? 'ETA pending' : duration(progress.etaSeconds) + ' remaining') : (state.error ? 'interrupted' : 'finished')}`
+    ? `${duration(progress.seconds)} total · ${duration(progress.stageSeconds)} in this stage${state.running && progress.total > 0 ? (progress.etaSeconds === null ? ' · remaining unknown' : ' · about ' + duration(progress.etaSeconds) + ' left') : ''}`
     : '—');
+  const counts = progress?.capture;
+  el('capture-metrics').hidden = !counts;
+  if (counts) {
+    text('capture-complete', counts.complete.toLocaleString());
+    text('capture-partial', counts.partial.toLocaleString());
+    text('capture-failed', counts.failed.toLocaleString());
+    text('capture-reused', counts.reused.toLocaleString());
+    text('capture-active', counts.active.toLocaleString());
+  }
+  text('pacing', state.running ? (progress?.waiting ?? '') : '');
+  el('pacing').hidden = !state.running || !progress?.waiting;
   text('summary', state.error ?? state.result ?? (state.running ? 'Archive operation in progress…' : 'No archive result yet.'));
   el('summary').classList.toggle('error', Boolean(state.error));
   for (const id of ['export-all','test-25']) (el(id) as HTMLButtonElement).disabled = state.running || !state.signedIn;

@@ -33,6 +33,14 @@
           <div class="progress-heading"><strong id="stage">Ready</strong><span id="counter">—</span></div>
           <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
           <div class="progress-details"><span id="detail">No export running</span><span id="elapsed">—</span></div>
+          <div id="capture-metrics" class="capture-metrics" hidden>
+            <span><strong id="capture-complete">0</strong> fully saved</span>
+            <span><strong id="capture-partial">0</strong> partial</span>
+            <span><strong id="capture-failed">0</strong> failed</span>
+            <span><strong id="capture-reused">0</strong> reused</span>
+            <span><strong id="capture-active">0</strong> active</span>
+          </div>
+          <div id="pacing" class="pacing" hidden></div>
         </div>
       </section>
       <section class="integrity card" aria-labelledby="verify-title">

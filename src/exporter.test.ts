@@ -74,9 +74,11 @@ test('a denied conversation does not abort other chats and the progress bar coun
     assert.equal((report.failed as Array<{ id: string }>).length, 1);
     assert.equal((report.failed as Array<{ id: string }>)[0]?.id, 'chat_denied');
     const last = updates.filter(update => update.stage === 'Capturing').at(-1);
-    assert.equal(last?.done, 1, 'one verified conversation saved, not two');
+    assert.equal(last?.done, 2, 'the progress bar counts both finished attempts, not just fully saved results');
     assert.equal(last?.total, 2);
-    assert.match(last?.note ?? '', /2 attempted; 1 complete; 0 partial; 0 reused; 1 errors/);
+    assert.deepEqual(last?.capture, {
+      attempted: 2, complete: 1, partial: 0, failed: 1, reused: 0, active: 0,
+    });
     assert.ok(updates.some(update => update.message?.includes('failed (HTTP 401)')));
     assert.equal(await archive.canSkip(workspace.key, 'chat_allowed', 1, true), true);
   } finally { await rm(output, { recursive: true, force: true }); }

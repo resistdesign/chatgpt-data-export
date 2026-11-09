@@ -135,12 +135,21 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
   const failed: Array<{ id: string; reason: string }> = [];
   let index = 0;
   let stoppingForFatalError = false;
-  progress.set('Capturing', 0, selected.length, 'checking local checkpoints');
+  const captureProgress = (detail = 'Checking saved checkpoints and downloading conversations'): void => {
+    const attempted = completed + failed.length;
+    const complete = completed - partial;
+    const active = Math.max(0, Math.min(index, selected.length) - attempted);
+    progress.set('Capturing', attempted, selected.length, detail, {
+      attempted, complete, partial, failed: failed.length, reused: skipped, active,
+    });
+  };
+  captureProgress();
   const worker = async (): Promise<void> => {
     while (!cancelled() && !stoppingForFatalError) {
       const current = index++;
       const item = selected[current];
       if (!item) return;
+      captureProgress(`Checking conversation ${current + 1}/${selected.length} and its saved checkpoint`);
       const conversationRoot = `${root}/conversations/${item.id}`;
       try {
         if (await archive.canSkip(workspace.key, item.id, item.updated, options.assets)) { skipped++; completed++; }
@@ -186,12 +195,15 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           }
         }
       }
-      // A failed attempt is not saved data, and cancelled requests must not
-      // move the progress counter or create bogus error records.
+      // The bar tracks finished attempts. The separate counters distinguish
+      // fully saved, partial, reused, and failed conversations.
       if (!cancelled() && !stoppingForFatalError) {
-        const verifiedComplete = completed - partial;
-        progress.set('Capturing', verifiedComplete, selected.length,
-          `${completed + failed.length} attempted; ${verifiedComplete} complete; ${partial} partial; ${skipped} reused; ${failed.length} errors`);
+        captureProgress();
+        const attempted = completed + failed.length;
+        const every = selected.length <= 50 ? 5 : 25;
+        if (attempted > 0 && (attempted === 1 || attempted % every === 0 || attempted === selected.length)) {
+          progress.info(`Conversations: ${attempted}/${selected.length} processed; ${completed - partial} fully saved (${skipped} reused), ${partial} partial, ${failed.length} failed.`);
+        }
       }
     }
   };
