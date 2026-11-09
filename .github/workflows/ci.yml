@@ -18,12 +18,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: corepack enable
-      - run: yarn install
-      - uses: actions/upload-artifact@v4
-        if: matrix.node == '22'
-        with:
-          name: generated-yarn-lock
-          path: yarn.lock
+      - run: yarn install --frozen-lockfile
       - run: yarn typecheck
       - run: yarn test
       - name: Confirm packaged desktop assets exist
