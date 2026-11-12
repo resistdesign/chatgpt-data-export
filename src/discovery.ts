@@ -14,6 +14,7 @@ export interface Inventory {
   shared: unknown[];
   warnings: string[];
   scopes: Record<string, 'complete' | 'unavailable'>;
+  sync?: { mode: 'recent'; at: string; new: number; updated: number; requests: Record<string, number> };
 }
 
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -159,6 +160,202 @@ export async function buildInventory(api: ChatGptApi, scope: Workspace, progress
     if (str(v.conversation_id)) add({ ...v, id: v.conversation_id }, { shareId: str(v.id) });
   }, true);
   return { schema: 1, generatedAt: new Date().toISOString(), conversations: [...conversations.values()].sort((a, b) => a.id.localeCompare(b.id)), projects, shared, warnings, scopes };
+}
+
+
+/** Fast, lossless union of fresh provider listings with an existing full inventory. */
+export interface IncrementalInventoryResult {
+  inventory: Inventory;
+  changedIds: string[];
+  newIds: string[];
+  newProjectIds: string[];
+  newShareIds: string[];
+  requests: Record<string, number>;
+}
+
+/**
+ * Check newest main, archived, Project and shared listings, stopping when an
+ * entire page consists of already-known, unchanged entries. The provider orders
+ * main/archived listings by updated time; Project cursors are scanned until the
+ * older known portion or the end. A full inventory refresh is still available
+ * if deep older changes or provider ordering become uncertain.
+ *
+ * Build the entire merged inventory IN MEMORY: callers commit it atomically
+ * only after successful scans, so interrupted syncs keep the old inventory.
+ */
+export async function refreshRecentInventory(
+  api: ChatGptApi, scope: Workspace, previous: Inventory, progress: Progress,
+): Promise<IncrementalInventoryResult> {
+  if (previous.schema !== 1 || !Array.isArray(previous.conversations)) {
+    throw new Error('Incremental sync requires a valid saved inventory');
+  }
+  const chats = new Map(previous.conversations.map(item => [item.id, { ...item }]));
+  const changed = new Set<string>();
+  const newlyAdded = new Set<string>();
+  const requests: Record<string, number> = { main: 0, archived: 0, projects: 0, shared: 0 };
+  const scopes = { ...previous.scopes };
+  const warnings = [...previous.warnings];
+  const add = (item: unknown, extra: Partial<ConversationListing> = {}): boolean => {
+    const value = record(item);
+    const id = str(value.id) ?? str(value.conversation_id);
+    if (!id || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) return false;
+    const old = chats.get(id);
+    const title = str(value.title) ?? old?.title ?? '';
+    const updated = (value.update_time as string | number | null | undefined) ?? old?.updated ?? null;
+    const next: ConversationListing = { ...old, id, title, updated, ...extra };
+    chats.set(id, next);
+    if (!old) newlyAdded.add(id);
+    if (!old || old.updated !== updated || old.title !== title ||
+      (extra.projectId !== undefined && old.projectId !== extra.projectId) ||
+      (extra.archived !== undefined && old.archived !== extra.archived)) changed.add(id);
+    return !!old && !changed.has(id);
+  };
+
+  const recentPages = async (
+    label: 'main' | 'archived' | 'shared',
+    endpoint: (offset: number) => string,
+    consume: (item: unknown) => boolean,
+    optional: boolean,
+  ): Promise<void> => {
+    let offset = 0;
+    const seen = new Set<string>();
+    try {
+      for (let page = 0; page < 1000; page++) {
+        const response = record(await api.get(endpoint(offset), scope.id));
+        requests[label]++;
+        if (!Array.isArray(response.items)) throw new Error(`Recent ${label} listing returned no items`);
+        const items = response.items;
+        const fingerprint = JSON.stringify(items.map(item => record(item).id ?? record(item).conversation_id));
+        if (items.length && seen.has(fingerprint)) throw new Error(`Recent ${label} pagination repeated a page`);
+        seen.add(fingerprint);
+        const unchanged = items.filter(consume).length;
+        progress.set('Checking for new conversations', changed.size, undefined,
+          `${label}: page ${page + 1}; ${newlyAdded.size} new, ${changed.size - newlyAdded.size} updated`);
+        if (items.length < 100 || (items.length >= 100 && unchanged >= 95)) {
+          scopes[`recent_${label}`] = 'complete';
+          return;
+        }
+        offset += items.length - 5;
+      }
+      throw new Error(`Recent ${label} listing exceeded pagination limit`);
+    } catch (error) {
+      if (optional && isMissing(error)) {
+        scopes[`recent_${label}`] = 'unavailable';
+        warnings.push(`Recent ${label}: endpoint unavailable`);
+        return;
+      }
+      throw error;
+    }
+  };
+
+  await recentPages('main',
+    offset => `/backend-api/conversations?${query({ offset: String(offset), limit: '100', order: 'updated' })}`,
+    item => add(item, { archived: false }), false);
+  await recentPages('archived',
+    offset => `/backend-api/conversations?${query({ offset: String(offset), limit: '100', order: 'updated', is_archived: 'true' })}`,
+    item => add(item, { archived: true }), false);
+
+  const projects = new Map(previous.projects.map(item => [item.id, { ...item }]));
+  const newProjectIds = new Set<string>();
+  try {
+    let nextSidebar: string | null = null;
+    const visited = new Set<string>();
+    for (let sidebarPage = 0; sidebarPage < 500; sidebarPage++) {
+      const params: Record<string, string> = { conversations_per_gizmo: '0' };
+      if (nextSidebar) params.cursor = nextSidebar;
+      const sidebar = record(await api.get(`/backend-api/gizmos/snorlax/sidebar?${query(params)}`, scope.id));
+      requests.projects++;
+      if (!Array.isArray(sidebar.items)) throw new Error('Recent Project sidebar has no items');
+      for (const item of sidebar.items) {
+        const outer = record(record(item).gizmo);
+        const nested = record(outer.gizmo);
+        const gizmo = Object.keys(nested).length ? nested : outer;
+        const id = str(gizmo.id);
+        if (!id?.startsWith('g-p-') || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) continue;
+        const old = projects.get(id);
+        if (old) projects.set(id, { ...old, raw: item });
+        else {
+          const project: ProjectListing = { id, raw: item, files: array(outer.files ?? record(item).files) };
+          try {
+            project.details = await api.get(`/backend-api/gizmos/${encodeURIComponent(id)}`, scope.id);
+            requests.projects++;
+            const details = record(project.details);
+            if (Array.isArray(details.files)) project.files = details.files;
+            if (Array.isArray(record(details.gizmo).files)) project.files = record(details.gizmo).files as unknown[];
+          } catch (error) {
+            if (!isMissing(error)) throw error;
+            warnings.push(`New Project ${id}: details unavailable`);
+          }
+          projects.set(id, project);
+          newProjectIds.add(id);
+        }
+        let cur: string | null = null;
+        const seenCursors = new Set<string>();
+        for (let page = 0; page < 1000; page++) {
+          const params = { limit: '50', owned_only: 'false', ...(cur ? { cursor: cur } : {}) };
+          const response = record(await api.get(
+            `/backend-api/gizmos/${encodeURIComponent(id)}/conversations?${query(params)}`, scope.id));
+          requests.projects++;
+          if (!Array.isArray(response.items)) throw new Error('Recent Project conversation page malformed');
+          const unchanged = response.items.filter(item => add(item, { projectId: id })).length;
+          const next = cursor(response.cursor ?? response.next_cursor);
+          if (!next || !response.items.length || (response.items.length >= 50 && unchanged >= 45)) break;
+          if (seenCursors.has(next)) throw new Error('Recent Project cursor repeated');
+          seenCursors.add(next);
+          cur = next;
+          if (page === 999) throw new Error('Recent Project conversation pagination limit');
+        }
+      }
+      progress.set('Checking Project updates', projects.size, undefined,
+        `${requests.projects} requests; ${newlyAdded.size} new conversations`);
+      const next = cursor(sidebar.cursor ?? sidebar.next_cursor);
+      if (!next || !sidebar.items.length) break;
+      if (visited.has(next)) throw new Error('Recent Project sidebar cursor repeated');
+      visited.add(next);
+      nextSidebar = next;
+      if (sidebarPage === 499) throw new Error('Recent Project sidebar pagination limit');
+    }
+    scopes.recent_projects = 'complete';
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+    scopes.recent_projects = 'unavailable';
+    warnings.push('Recent Project scan unavailable; Project-only updates may be missing');
+  }
+
+  const shares = new Map<string, unknown>();
+  const shareKey = (item: unknown): string => str(record(item).id) ??
+    str(record(item).share_id) ?? JSON.stringify(item);
+  for (const item of previous.shared) shares.set(shareKey(item), item);
+  const newShareIds = new Set<string>();
+  await recentPages('shared',
+    offset => `/backend-api/shared_conversations?${query({ offset: String(offset), limit: '100', order: 'updated' })}`,
+    item => {
+      const key = shareKey(item);
+      const known = shares.has(key);
+      shares.set(key, item);
+      if (!known) newShareIds.add(key);
+      const entry = record(item);
+      if (str(entry.conversation_id)) add({ ...entry, id: entry.conversation_id }, { shareId: str(entry.id) });
+      return known;
+    }, true);
+
+  const inventory: Inventory = {
+    ...previous,
+    generatedAt: new Date().toISOString(),
+    conversations: [...chats.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    projects: [...projects.values()],
+    shared: [...shares.values()],
+    warnings, scopes,
+    sync: {
+      mode: 'recent', at: new Date().toISOString(),
+      new: newlyAdded.size, updated: changed.size - newlyAdded.size, requests,
+    },
+  };
+  progress.info(`Incremental inventory: ${newlyAdded.size} new conversations, ${changed.size - newlyAdded.size} changed; ${Object.values(requests).reduce((a, b) => a + b, 0)} listing requests.`);
+  return {
+    inventory, changedIds: [...changed], newIds: [...newlyAdded],
+    newProjectIds: [...newProjectIds], newShareIds: [...newShareIds], requests,
+  };
 }
 
 export async function readDetail(api: ChatGptApi, scope: Workspace, id: string): Promise<unknown> {
