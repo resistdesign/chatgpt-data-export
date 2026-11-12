@@ -3,7 +3,7 @@ import { Archive, type CompletionMarker, type SavedFile } from './archive.js';
 import { ApiError, RateLimitExhausted, SessionExpiredError, SessionCheckError, ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import { saveAssets, deferAssets } from './assets.js';
-import { buildInventory, discoverWorkspaces, readDetail, record, array, str, type Inventory, type Workspace } from './discovery.js';
+import { buildInventory, refreshRecentInventory, discoverWorkspaces, readDetail, record, array, str, type Inventory, type Workspace, type IncrementalInventoryResult } from './discovery.js';
 import type { Progress } from './progress.js';
 
 export interface ExportOptions {
@@ -12,6 +12,8 @@ export interface ExportOptions {
   max: number | undefined;
   assets: boolean;
   refresh: boolean;
+  /** Fresh listings, capture only new/changed chats, skip old Project/account downloads. */
+  sync?: boolean;
 }
 
 const optionalPaths: Record<string, string> = {
@@ -83,16 +85,28 @@ function projectsForRun(
 
 export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspace: Workspace, progress: Progress, options: ExportOptions, cancelled: () => boolean): Promise<Record<string, unknown>> {
   const root = `workspaces/${workspace.key}`;
-  const previous = options.refresh ? undefined : await archive.read<Inventory>(`${root}/inventory.json`);
-  const inventory = previous?.schema === 1 && previous.scopes.main === 'complete' && previous.scopes.archived === 'complete'
-    ? previous : await buildInventory(api, workspace, progress);
+  const previous = options.refresh && !options.sync
+    ? undefined : await archive.read<Inventory>(`${root}/inventory.json`);
+  const canReuse = previous?.schema === 1 &&
+    previous.scopes.main === 'complete' && previous.scopes.archived === 'complete';
+  const delta: IncrementalInventoryResult | null = options.sync && canReuse
+    ? await refreshRecentInventory(api, workspace, previous, progress) : null;
+  const inventory = delta?.inventory ?? (canReuse ? previous : await buildInventory(api, workspace, progress));
   if (inventory !== previous) await archive.json(`${root}/inventory.json`, inventory);
-  progress.info(`Workspace ${workspace.label}: ${inventory.conversations.length} conversations, ${inventory.projects.length} Projects. Inventory ${previous === inventory ? 'resumed' : 'saved'}.`);
+  progress.info(`Workspace ${workspace.label}: ${inventory.conversations.length} conversations, ${inventory.projects.length} Projects. Inventory ${delta ? 'incrementally updated' : previous === inventory ? 'resumed' : 'saved'}.`);
   if (!options.assets) progress.info('History-first export: saving conversation JSON and Project metadata now; attachment downloads are deferred.');
-  const account = await captureAccount(api, archive, workspace, progress);
-  const selected = inventory.conversations.slice(0, options.max);
+  const account = delta
+    ? await archive.read<Record<string, string>>(`${root}/account/status.json`) ?? {}
+    : await captureAccount(api, archive, workspace, progress);
+  const changedIds = new Set(delta?.changedIds ?? []);
+  const selected = delta
+    ? inventory.conversations.filter(item => changedIds.has(item.id))
+    : inventory.conversations.slice(0, options.max);
   const pilot = options.max !== undefined;
-  const projectTargets = projectsForRun(inventory, selected, pilot);
+  const projectTargets = delta
+    ? inventory.projects.filter(item => delta.newProjectIds.includes(item.id))
+    : projectsForRun(inventory, selected, pilot);
+  if (delta) progress.info(`Quick sync: ${delta.newIds.length} new and ${delta.changedIds.length - delta.newIds.length} updated conversations need capture; existing checkpoints stay untouched.`);
   const projectMissing: string[] = [];
   const sharedFailures: string[] = [];
   if (pilot) {
@@ -131,7 +145,11 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
   }
   // Shared-only links may not have an owner conversation ID. Keep their raw listing
   // and attempt to capture the share itself without pretending it's a normal chat.
-  for (const share of inventory.shared) {
+  const sharedTargets = delta
+    ? inventory.shared.filter(item => delta.newShareIds.includes(
+      str(record(item).id) ?? str(record(item).share_id) ?? JSON.stringify(item)))
+    : inventory.shared;
+  for (const share of sharedTargets) {
     const entry = record(share);
     if (str(entry.conversation_id)) continue;
     const shareId = str(entry.id) ?? str(entry.share_id);
@@ -166,7 +184,7 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
       captureProgress(`Checking conversation ${current + 1}/${selected.length} and its saved checkpoint`);
       const conversationRoot = `${root}/conversations/${item.id}`;
       try {
-        if (await archive.canSkip(workspace.key, item.id, item.updated, options.assets)) {
+        if (!delta && await archive.canSkip(workspace.key, item.id, item.updated, options.assets)) {
           const priorMarker = await archive.marker(workspace.key, item.id);
           skipped++;
           completed++;
@@ -175,7 +193,7 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           if (priorMarker?.missing.length) partial++;
         } else {
           const prior = await archive.marker(workspace.key, item.id);
-          const reusable = prior?.updated === item.updated && await archive.verified(prior.raw);
+          const reusable = !delta && prior?.updated === item.updated && await archive.verified(prior.raw);
           const source = reusable ? await archive.read<unknown>(prior.raw.path) : await readDetail(api, workspace, item.id);
           if (!source) throw new Error('Conversation detail is missing');
           const raw = reusable ? prior.raw : await archive.json(`${conversationRoot}/raw.json`, source);
@@ -262,6 +280,13 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
   const report = {
     workspace: { label: workspace.label, key: workspace.key, kind: workspace.kind },
     inventoryGeneratedAt: inventory.generatedAt, discovered: inventory.conversations.length,
+    ...(delta ? { incrementalSync: {
+      new: delta.newIds.length,
+      updated: delta.changedIds.length - delta.newIds.length,
+      listingRequests: delta.requests,
+      selected: selected.length,
+      updatedAt: inventory.generatedAt,
+    } } : {}),
     selected: selected.length, completed, skipped, partial, failed,
     projectCoverage: { total: inventory.projects.length, checked: projectTargets.length, sampled: pilot },
     projectMissing, sharedFailures, account, inventoryWarnings: inventory.warnings, scopes: inventory.scopes, verification,
