@@ -24,6 +24,7 @@ test('recent scan merges new main, archived and Project-only chats without dropp
   const oldChats = Array.from({ length: 100 }, (_, index) => ({
     id: `chat_${index.toString().padStart(3, '0')}`, title: `Old ${index}`, updated: 1,
   }));
+  oldChats[50] = { ...oldChats[50]!, projectId: 'g-p-old' } as typeof oldChats[number];
   const original = baseInventory(oldChats, [{ id: 'g-p-old', raw: { status: 'old' }, details: { files: [] }, files: [] }]);
   const calls: string[] = [];
   const api: ChatGptApi = {
@@ -182,7 +183,7 @@ test('failed incremental discovery never replaces the known-good inventory', asy
     const api: ChatGptApi = {
       cancel: () => undefined,
       get: async request => {
-        if (request.includes('is_archived=true')) throw new RateLimitExhausted(request, 429);
+        if (request.includes('is_archived=true')) throw new RateLimitExhausted(request);
         if (request.startsWith('/backend-api/conversations?')) {
           return { items: [{ id: 'chat_new', title: 'New', update_time: 5 }] };
         }
