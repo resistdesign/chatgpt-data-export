@@ -192,7 +192,9 @@ export async function refreshRecentInventory(
   const chats = new Map(previous.conversations.map(item => [item.id, { ...item }]));
   const changed = new Set<string>();
   const newlyAdded = new Set<string>();
-  const requests: Record<string, number> = { main: 0, archived: 0, projects: 0, shared: 0 };
+  const requests: { main: number; archived: number; projects: number; shared: number } = {
+    main: 0, archived: 0, projects: 0, shared: 0,
+  };
   const scopes = { ...previous.scopes };
   const warnings = [...previous.warnings];
   const add = (item: unknown, extra: Partial<ConversationListing> = {}): boolean => {
@@ -207,7 +209,9 @@ export async function refreshRecentInventory(
     if (!old) newlyAdded.add(id);
     if (!old || old.updated !== updated || old.title !== title ||
       (extra.projectId !== undefined && old.projectId !== extra.projectId) ||
-      (extra.archived !== undefined && old.archived !== extra.archived)) changed.add(id);
+      // Older baseline inventories omit archived:false on main-list chats.
+      // Treat absence as false, otherwise a quick sync would recapture all.
+      (extra.archived !== undefined && Boolean(old.archived) !== extra.archived)) changed.add(id);
     return !!old && !changed.has(id);
   };
 
