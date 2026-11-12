@@ -246,7 +246,7 @@ async function runExport(limit: 25 | null, historyFirst = false, incremental = f
     };
     const report = await exportAll(client, options, progress, () => job.cancelled);
     state.status = report.status === 'complete' ? 'Export completed' : report.status === 'cancelled' ? 'Export stopped' : 'Export finished with incomplete coverage';
-    const changes = report.reports.reduce((total, item) => {
+    const changes = report.reports.reduce<{ new: number; updated: number }>((total, item) => {
       const sync = item.incrementalSync as { new?: number; updated?: number } | undefined;
       return { new: total.new + (sync?.new ?? 0), updated: total.updated + (sync?.updated ?? 0) };
     }, { new: 0, updated: 0 });
