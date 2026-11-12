@@ -25,6 +25,9 @@ export interface ArchiveOverview {
   projectsWithMissing: number;
   lastRunAt: string | null;
   lastRunStatus: string | null;
+  lastSyncAt: string | null;
+  lastSyncNew: number;
+  lastSyncUpdated: number;
   blockers: Record<'permission_error' | 'HTTP 401' | 'HTTP 403' | 'HTTP 404' | 'other', number>;
   /** Sanitized counts of download attempts. This is not a list of filenames or URLs. */
   routeFailures: RouteFailure[];
@@ -129,6 +132,7 @@ async function scan(output: string): Promise<ScanResult> {
     notYetCaptured: 0, missingFiles: 0, projects: 0, projectFilesMissing: 0,
     projectsWithMissing: 0, lastRunAt: report?.at ?? null,
     lastRunStatus: report?.status ?? null, verified: false,
+    lastSyncAt: null, lastSyncNew: 0, lastSyncUpdated: 0,
     blockers: { permission_error: 0, 'HTTP 401': 0, 'HTTP 403': 0, 'HTTP 404': 0, other: 0 },
     routeFailures: [],
   };
@@ -140,6 +144,13 @@ async function scan(output: string): Promise<ScanResult> {
     const inventory = await archive.read<Inventory>(`${base}/inventory.json`);
     if (!inventory || inventory.schema !== 1 || !Array.isArray(inventory.conversations)) continue;
     hasInventory = true;
+    if (inventory.sync?.mode === 'recent') {
+      if (!overview.lastSyncAt || inventory.sync.at > overview.lastSyncAt) {
+        overview.lastSyncAt = inventory.sync.at;
+      }
+      overview.lastSyncNew += inventory.sync.new;
+      overview.lastSyncUpdated += inventory.sync.updated;
+    }
     overview.workspaces++;
     overview.discovered += inventory.conversations.length;
     const conversationIds = await directories(archive, `${base}/conversations`);

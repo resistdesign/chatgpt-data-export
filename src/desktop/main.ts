@@ -245,13 +245,19 @@ async function runExport(limit: 25 | null, historyFirst = false, incremental = f
       sync: incremental,
     };
     const report = await exportAll(client, options, progress, () => job.cancelled);
-    state.status = report.status === 'complete' ? 'Export completed' : report.status === 'cancelled' ? 'Export stopped' : 'Export finished with incomplete coverage';
+    state.status = incremental ? 'Recent conversation sync finished'
+      : report.status === 'complete' ? 'Export completed'
+      : report.status === 'cancelled' ? 'Export stopped'
+      : 'Export finished with incomplete coverage';
     const changes = report.reports.reduce<{ new: number; updated: number }>((total, item) => {
       const sync = item.incrementalSync as { new?: number; updated?: number } | undefined;
       return { new: total.new + (sync?.new ?? 0), updated: total.updated + (sync?.updated ?? 0) };
     }, { new: 0, updated: 0 });
+    const wasQuickSync = report.reports.some(item => Boolean(item.incrementalSync));
     state.result = incremental
-      ? `Sync finished: ${changes.new} new and ${changes.updated} updated conversations discovered. Previously saved records retained; attachments deferred.`
+      ? wasQuickSync
+        ? `Sync finished: ${changes.new} new and ${changes.updated} updated conversations discovered. Existing archive preserved; attachments deferred.`
+        : 'Initial inventory and conversation backup completed; future runs can sync only recent changes.'
       : `Export ${report.status}. Review report.json before treating the archive as complete.`;
     event(state.result);
   } catch (err) {

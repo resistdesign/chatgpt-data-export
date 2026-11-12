@@ -119,6 +119,7 @@ test('incremental backup downloads only changed and new conversation records, wi
     await archive.json(`${root}/conversations/chat_old/complete.json`, marker('chat_old', oldRaw));
     await archive.json(`${root}/conversations/chat_edited/complete.json`, marker('chat_edited', editedRaw));
     const oldContent = await readFile(archive.path(oldRaw.path), 'utf8');
+    const editedContent = await readFile(archive.path(editedRaw.path), 'utf8');
     const requests: string[] = [];
     const api: ChatGptApi = {
       cancel: () => undefined,
@@ -160,6 +161,15 @@ test('incremental backup downloads only changed and new conversation records, wi
     assert.equal(requests.filter(path => path.startsWith('/backend-api/files/')).length, 0);
     assert.equal(requests.filter(path => path.startsWith('/public-api/')).length, 0);
     assert.equal(await readFile(archive.path(oldRaw.path), 'utf8'), oldContent);
+    assert.equal(await readFile(archive.path(editedRaw.path), 'utf8'), editedContent,
+      'previous raw conversation revision must remain byte-for-byte intact');
+    const editedMarker = await archive.marker(workspace.key, 'chat_edited');
+    assert.match(editedMarker?.raw.path ?? '', /\/revisions\/.*\.json$/,
+      'updated chats should use a new content-addressed file');
+    const savedPreviousMarker = await archive.read<CompletionMarker>(
+      `${root}/conversations/chat_edited/revisions/${editedRaw.sha256}.marker.json`,
+    );
+    assert.equal(savedPreviousMarker?.raw.sha256, editedRaw.sha256);
     assert.equal(await archive.canSkip(workspace.key, 'chat_old', 1, false), true);
     assert.equal(await archive.canSkip(workspace.key, 'chat_new', 3, false), true);
     assert.equal(await archive.canSkip(workspace.key, 'chat_edited', 2, false), true);

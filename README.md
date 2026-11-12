@@ -163,3 +163,6 @@ After completing an initial export, open the same archive folder and click **Syn
 The sync uses the same per-conversation atomic checkpoints and adaptive 429 backoff as the main export, with attachment downloads deferred. The existing complete inventory is preserved if discovery is interrupted; when discovery succeeds, the merged inventory is saved before capture, so a later resume can finish any newly discovered chats. The dashboard reports how many new and updated conversations were found. Project-only chats and shared links are checked as well. An initial run with no valid saved inventory automatically performs a full discovery.
 
 **Scope:** Recent sync relies on provider listings sorted by recent activity. It's optimized for new/updated content, not an exhaustive revalidation of old, deleted, deeply buried or reordered data. Use a full inventory refresh for independent comprehensive reconciliation. The **Back up stored inventory** action reuses the saved list; it does not discover newer chats.
+
+
+For edited conversations, incremental sync **retains the previously downloaded raw bytes** and previous completion metadata in a `revisions/` directory, then writes the new version under a content-addressed path and updates its checkpoint. The dashboard shows the timestamp and newly found/updated counts from the latest recent sync.

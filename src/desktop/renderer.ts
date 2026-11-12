@@ -15,6 +15,7 @@ interface UiState {
     notYetCaptured: number; missingFiles: number; projects: number;
     projectFilesMissing: number; projectsWithMissing: number;
     lastRunAt: string | null; lastRunStatus: string | null; verified: false;
+    lastSyncAt: string | null; lastSyncNew: number; lastSyncUpdated: number;
     blockers: Record<string, number>;
     routeFailures: Array<{
       kind: 'conversation' | 'project'; route: string;
@@ -81,6 +82,9 @@ function render(state: UiState): void {
   text('archive-missing', saved
     ? `${saved.missingFiles.toLocaleString()} missing file references, including ${saved.projectFilesMissing.toLocaleString()} across ${saved.projectsWithMissing}/${saved.projects} Projects. Counts are from saved checkpoints, not hash verification.`
     : 'A small export will create a local inventory and resumable checkpoints.');
+  text('archive-sync', saved?.lastSyncAt
+    ? `Last recent sync: ${saved.lastSyncAt.slice(0, 16).replace('T', ' ')} UTC · ${saved.lastSyncNew} new · ${saved.lastSyncUpdated} updated`
+    : 'No recent sync yet; the saved inventory reflects the previous full discovery.');
   text('archive-blockers', saved
     ? Object.entries(saved.blockers).filter(([, count]) => count > 0)
       .map(([reason, count]) => `${reason}: ${count}`).join(' · ')
