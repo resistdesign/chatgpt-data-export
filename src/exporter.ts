@@ -1,5 +1,5 @@
 import { readdir } from 'node:fs/promises';
-import { Archive, type CompletionMarker, type SavedFile } from './archive.js';
+import { Archive, sha256, type CompletionMarker, type SavedFile } from './archive.js';
 import { ApiError, RateLimitExhausted, SessionExpiredError, SessionCheckError, ExportCancelledError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import { saveAssets, deferAssets } from './assets.js';
@@ -196,7 +196,17 @@ export async function exportWorkspace(api: ChatGptApi, archive: Archive, workspa
           const reusable = !delta && prior?.updated === item.updated && await archive.verified(prior.raw);
           const source = reusable ? await archive.read<unknown>(prior.raw.path) : await readDetail(api, workspace, item.id);
           if (!source) throw new Error('Conversation detail is missing');
-          const raw = reusable ? prior.raw : await archive.json(`${conversationRoot}/raw.json`, source);
+          // On incremental updates, NEVER overwrite the prior raw record.
+          // Keep both its bytes and previous completion metadata, then atomically
+          // point the new checkpoint at a content-addressed revision.
+          const preserved = Boolean(delta && prior && await archive.verified(prior.raw));
+          if (preserved && prior) {
+            await archive.json(`${conversationRoot}/revisions/${prior.raw.sha256}.marker.json`, prior);
+          }
+          const rawPath = preserved
+            ? `${conversationRoot}/revisions/${sha256(JSON.stringify(source))}.json`
+            : `${conversationRoot}/raw.json`;
+          const raw = reusable ? prior.raw : await archive.json(rawPath, source);
           const assets = options.assets
             ? await saveAssets(api, archive, workspace, conversationRoot, source, {
               conversationId: item.id, projectId: item.projectId, existing: prior?.files,
