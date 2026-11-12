@@ -154,3 +154,12 @@ Keep the original output directory selected and click **Back up conversations fi
 The request scheduler is shared by all concurrent workers. A 429 now triggers a **real global pause** (starting around 30 seconds, doubling on repeated 429s, capped around five minutes before jitter), extended if ChatGPT sends a longer `Retry-After`. Requests already waiting in line recheck the deadline; they cannot slip past a newer pause. After five successful responses, pacing eases gradually. The UI distinguishes ordinary **Request spacing** from **Rate-limit pause**. **Stop safely** interrupts either wait without losing saved checkpoints.
 
 This reduces wasted requests and protects the session, but cannot exceed the server's permitted rate. If 429s persist after the bounded retries, the run stops rather than claiming an incomplete conversation was saved; resume later from the same folder.
+
+
+### Ongoing backup: sync recent conversations (new November 2026)
+
+After completing an initial export, open the same archive folder and click **Sync new & updated**. The app checks the newest main, archived, Project and shared listings and merges them into your existing inventory. It stops paginating a listing once it reaches a full page of already-known, unchanged records. It then downloads only **new or updated conversation records**; old, unchanged chat records and existing files are never re-downloaded.
+
+The sync uses the same per-conversation atomic checkpoints and adaptive 429 backoff as the main export, with attachment downloads deferred. The existing complete inventory is preserved if discovery is interrupted; when discovery succeeds, the merged inventory is saved before capture, so a later resume can finish any newly discovered chats. The dashboard reports how many new and updated conversations were found. Project-only chats and shared links are checked as well. An initial run with no valid saved inventory automatically performs a full discovery.
+
+**Scope:** Recent sync relies on provider listings sorted by recent activity. It's optimized for new/updated content, not an exhaustive revalidation of old, deleted, deeply buried or reordered data. Use a full inventory refresh for independent comprehensive reconciliation. The **Back up stored inventory** action reuses the saved list; it does not discover newer chats.

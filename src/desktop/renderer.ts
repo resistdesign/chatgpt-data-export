@@ -40,7 +40,7 @@ interface AppBridge {
   signIn(): Promise<boolean>;
   checkSession(): Promise<boolean>;
   chooseOutput(): Promise<string>;
-  start(limit: 25 | null | 'history'): Promise<boolean>;
+  start(limit: 25 | null | 'history' | 'sync'): Promise<boolean>;
   recover(): Promise<boolean>;
   copyDiagnostics(): Promise<boolean>;
   observeFile(): Promise<boolean>;
@@ -130,7 +130,7 @@ function render(state: UiState): void {
   el('pacing').hidden = !state.running || !progress?.waiting;
   text('summary', state.error ?? state.result ?? (state.running ? 'Archive operation in progress…' : 'No archive result yet.'));
   el('summary').classList.toggle('error', Boolean(state.error));
-  for (const id of ['export-history','export-all','test-25']) (el(id) as HTMLButtonElement).disabled = state.running || !state.signedIn;
+  for (const id of ['sync-recent','export-history','export-all','test-25']) (el(id) as HTMLButtonElement).disabled = state.running || !state.signedIn;
   (el('stop') as HTMLButtonElement).disabled = !state.running ||
     (state.activity !== 'exporting' && state.activity !== 'recovering');
   for (const id of ['verify','choose-output']) (el(id) as HTMLButtonElement).disabled = state.running;
@@ -146,6 +146,7 @@ button('sign-in', () => app.signIn());
 button('check-session', () => app.checkSession());
 button('close-sign-in', () => app.closeSignIn());
 button('choose-output', () => app.chooseOutput());
+button('sync-recent', () => app.start('sync'));
 button('export-history', () => app.start('history'));
 button('export-all', () => app.start(null));
 button('test-25', () => app.start(25));

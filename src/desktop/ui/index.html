@@ -29,12 +29,13 @@
         <div class="section-head"><div class="number">02</div><div><h2 id="archive-title">Archive</h2><p>Files are written incrementally. Restarting reuses verified checkpoints.</p></div></div>
         <div class="destination"><div><div class="small-label">SAVE DATA TO</div><div id="output" class="path">Loading…</div></div><button id="choose-output" class="button outline small">Change folder</button></div>
         <div class="action-row main-actions">
-          <button id="export-history" class="button primary">Back up conversations first <span>→</span></button>
+          <button id="sync-recent" class="button primary">Sync new &amp; updated <span>→</span></button>
+          <button id="export-history" class="button secondary">Back up stored inventory</button>
           <button id="export-all" class="button outline">Include attachments (slower)</button>
           <button id="test-25" class="button secondary">Test 25</button>
           <button id="stop" class="button danger" disabled>Stop safely</button>
         </div>
-        <p class="backup-priority">Recommended: save all conversations and Project metadata first. Missing attachments stay recorded for later recovery; previously saved files are preserved.</p>
+        <p class="backup-priority">For ongoing backups, use <strong>Sync new &amp; updated</strong>. It checks recent conversations, archived chats and Projects, saves only changes, and retains your previous archive. Attachment downloads remain deferred. Deep historical changes may require a full inventory scan.</p>
         <div class="saved-archive" aria-live="polite">
           <div class="small-label">EXISTING ARCHIVE</div>
           <div id="archive-overview">Checking saved checkpoints…</div>
