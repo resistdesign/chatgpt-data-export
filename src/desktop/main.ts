@@ -8,6 +8,7 @@ import { exportAll, verifyArchive, type ExportOptions } from '../exporter.js';
 import { SessionExpiredError, SessionCheckError, ExportCancelledError } from '../errors.js';
 import { Progress, type ProgressSnapshot } from '../progress.js';
 import { inspectArchive, archiveDiagnosticText, missingProjectFilePairs, findMissingProjectExample, recoverMissingAssets, type ArchiveOverview } from '../recovery.js';
+import { syncMissingAttachments } from '../attachment-sync.js';
 import { summarizeFileRequest, formatObservedRequests, safeRequestHeaderNames, matchesMissingProjectFile, type ObservedFileRequest } from './request-observer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -18,7 +19,7 @@ interface UiState {
   signedIn: boolean;
   output: string;
   running: boolean;
-  activity: 'idle' | 'exporting' | 'recovering' | 'verifying';
+  activity: 'idle' | 'exporting' | 'recovering' | 'syncing-assets' | 'verifying';
   status: string;
   error: string | null;
   progress: ProgressSnapshot | null;
@@ -277,6 +278,46 @@ async function runExport(limit: 25 | null, historyFirst = false, incremental = f
 }
 
 /** A bounded local-checkpoint recovery pass; does not re-fetch the conversation list. */
+async function runAttachmentSync(): Promise<void> {
+  startJob('syncing-assets', 'Syncing missing attachments from saved references');
+  const progress = new Progress(snapshot => {
+    state.progress = snapshot;
+    if (snapshot.message) event(snapshot.message);
+    else broadcast();
+  }, false);
+  const client = new ElectronSessionClient(session.fromPartition(PARTITION), 750, progress);
+  const job = { api: client, cancelled: false };
+  current = job;
+  progress.start();
+  try {
+    if (!await client.authenticated()) throw new Error('Sign in to ChatGPT before syncing attachments.');
+    const result = await syncMissingAttachments(client, state.output, progress, () => job.cancelled);
+    state.status = 'Attachment sync pass finished';
+    state.result = `${result.recovered} attachments recovered (${result.alreadyVerified} already on disk); ${result.unavailable} newly unavailable; ${result.previouslyUnavailable} previously denied and skipped; ${result.unlisted} unmatched; ${result.remaining} missing references remain.`;
+    event(state.result);
+  } catch (error) {
+    if (job.cancelled || error instanceof ExportCancelledError) {
+      state.status = 'Attachment sync stopped safely';
+      state.error = null;
+      state.result = 'Attachment sync stopped. Every completed file checkpoint is retained; resume using the same button.';
+      event(state.result);
+    } else if (error instanceof SessionExpiredError) {
+      state.signedIn = false;
+      state.status = 'ChatGPT login expired; archive intact';
+      state.error = 'Sign into ChatGPT again, then resume attachment sync.';
+      event(state.error);
+    } else {
+      state.status = 'Attachment sync interrupted; archive intact';
+      state.error = description(error);
+      event('Attachment sync interrupted; saved file checkpoints remain. Retry later from the same archive.');
+    }
+  } finally {
+    progress.stop();
+    finishJob();
+    void refreshArchiveOverview();
+  }
+}
+
 async function runRecovery(): Promise<void> {
   startJob('recovering', 'Recovering up to 10 missing files');
   const progress = new Progress(snapshot => {
@@ -372,6 +413,15 @@ async function initialize(): Promise<void> {
   ipcMain.handle('app:observe-file', async e => {
     ensureDashboard(e);
     await toggleFileObservation();
+    return true;
+  });
+  ipcMain.handle('app:sync-assets', e => {
+    ensureDashboard(e);
+    if (state.running) throw new Error('Archive is busy');
+    if (!state.signedIn || !state.archive || state.archive.missingFiles === 0) {
+      throw new Error('Sign in and select an archive with missing attachments first.');
+    }
+    void runAttachmentSync();
     return true;
   });
   ipcMain.handle('app:recover', e => {
