@@ -293,10 +293,8 @@ async function runAttachmentSync(): Promise<void> {
   try {
     if (!await client.authenticated()) throw new Error('Sign in to ChatGPT before syncing attachments.');
     const result = await syncMissingAttachments(client, state.output, progress, () => job.cancelled);
-    state.status = result.status === 'stopped'
-      ? 'Attachment sync paused after repeated denials' : 'Attachment sync pass finished';
-    state.result = `${result.recovered} attachments recovered (${result.alreadyVerified} already on disk); ${result.unavailable} newly unavailable; ${result.previouslyUnavailable} previously denied and skipped; ${result.unlisted} unmatched; ${result.remaining} missing references remain.` +
-      (result.status === 'stopped' ? ' Paused after 60 consecutive unavailable files to avoid unnecessary traffic. Existing checkpoints are preserved.' : '');
+    state.status = 'Attachment sync pass finished';
+    state.result = `${result.recovered} attachments recovered (${result.alreadyVerified} already on disk); ${result.unavailable} newly unavailable; ${result.previouslyUnavailable} previously denied and skipped; ${result.unlisted} unmatched; ${result.remaining} missing references remain.`;
     event(state.result);
   } catch (error) {
     if (job.cancelled || error instanceof ExportCancelledError) {
