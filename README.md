@@ -166,3 +166,14 @@ The sync uses the same per-conversation atomic checkpoints and adaptive 429 back
 
 
 For edited conversations, incremental sync **retains the previously downloaded raw bytes** and previous completion metadata in a `revisions/` directory, then writes the new version under a content-addressed path and updates its checkpoint. The dashboard shows the timestamp and newly found/updated counts from the latest recent sync.
+
+
+### Sync missing attachments from the existing archive
+
+Click **Sync missing attachments** after the conversation backup. The sync reads only the locally saved inventories, raw conversation JSON, and missing-file checkpoints. It does not re-download or re-enumerate conversations. It tries deferred attachment references (conversations before Project files), hashes saved bytes, and writes per-file atomic progress markers. Recovered files remain recovered after a crash, restart, session expiry or **Stop safely**.
+
+Previously denied attachments (permission error, HTTP 401/403/404, or already exhausted routes) are **skipped by default** rather than retried thousands of times. Such files remain explicitly missing and can be retried manually with **Retry 10 inaccessible files**. A denial is not proof the file is permanently deleted. Any *new* inaccessible file is recorded in its saved index/marker and skipped on subsequent automatic syncs.
+
+The dashboard tracks recovered, actual download attempts, newly unavailable, previously denied/skipped, unmatched references, and missing local source records. Live per-attachment progress is separate from conversation history. The final checkpoint `attachment-sync-latest.json` records aggregate progress only, without tokens or filenames. A stopped or rate-limited run can be resumed with the same button, unchanged output directory, and authenticated Electron session.
+
+**Rate limiting:** Binary attachment calls share the adaptive HTTP 429 backoff and `Retry-After` handling used for conversation requests. The provider may still throttle or deny downloads. The tool cannot guarantee that every historical attachment can be recovered.

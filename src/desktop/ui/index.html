@@ -45,7 +45,8 @@
           <p id="archive-routes"></p>
           <div class="archive-actions">
             <button id="copy-diagnostics" class="button outline" disabled>Copy safe diagnostic summary</button>
-            <button id="retry-missing" class="button outline" disabled>Recover next 10 files (Projects first)</button>
+            <button id="sync-assets" class="button secondary" disabled>Sync missing attachments</button>
+            <button id="retry-missing" class="button outline" disabled>Retry 10 inaccessible files</button>
           </div>
           <div class="file-observer">
             <p id="observation-status">Optional: observe the real file download route used by ChatGPT without saving credentials or file identifiers.</p>
@@ -56,6 +57,14 @@
           <div class="progress-heading"><strong id="stage">Ready</strong><span id="counter">—</span></div>
           <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
           <div class="progress-details"><span id="detail">No export running</span><span id="elapsed">—</span></div>
+          <div id="attachment-metrics" class="capture-metrics" hidden>
+            <span><strong id="asset-recovered">0</strong> recovered</span>
+            <span><strong id="asset-attempted">0</strong> attempted</span>
+            <span><strong id="asset-unavailable">0</strong> newly unavailable</span>
+            <span><strong id="asset-previously-denied">0</strong> previously denied, skipped</span>
+            <span><strong id="asset-unlisted">0</strong> absent from metadata</span>
+            <span><strong id="asset-source-missing">0</strong> missing source records</span>
+          </div>
           <div id="capture-metrics" class="capture-metrics" hidden>
             <span><strong id="capture-complete">0</strong> fully saved</span>
             <span><strong id="capture-partial">0</strong> partial</span>

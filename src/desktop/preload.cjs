@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('chatgptExporter', Object.freeze({
   chooseOutput: () => ipcRenderer.invoke('app:choose-output'),
   start: limit => ipcRenderer.invoke('app:start', limit),
   recover: () => ipcRenderer.invoke('app:recover'),
+  syncAssets: () => ipcRenderer.invoke('app:sync-assets'),
   copyDiagnostics: () => ipcRenderer.invoke('app:copy-diagnostics'),
   observeFile: () => ipcRenderer.invoke('app:observe-file'),
   verify: () => ipcRenderer.invoke('app:verify'),
