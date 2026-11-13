@@ -267,3 +267,44 @@ test('cancellation interrupts a shared backoff without any more file requests', 
   await assert.rejects(attempt, error => error instanceof ExportCancelledError);
   assert.equal(requests, 1, 'cancelled request must not retry after the rate-limit pause');
 });
+
+test('binary attachment HTTP 429 shares adaptive cooldown and honors Retry-After', async () => {
+  let now = 0;
+  const sentAt: number[] = [];
+  const waits: string[] = [];
+  const timing: RequestTiming = {
+    now: () => now, sleep: async ms => { now += ms; }, random: () => 0,
+  };
+  const session: AuthenticatedSession = { async fetch(url, init) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'token' });
+    sentAt.push(now);
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer token');
+    if (sentAt.length === 1) {
+      return new Response('{}', { status: 429, headers: { 'Retry-After': '75' } });
+    }
+    return new Response('binary bytes', { status: 200 });
+  } };
+  const client = new ElectronSessionClient(session, 750, new Progress(snapshot => {
+    if (snapshot.waiting) waits.push(snapshot.waiting);
+  }, false), timing);
+  await client.authenticated();
+  const response = await client.openFile('/backend-api/files/download/file_test');
+  assert.equal(await response.text(), 'binary bytes');
+  assert.deepEqual(sentAt, [0, 75_000]);
+  assert.ok(waits.some(message => message.includes('Rate-limit pause')),
+    'binary file requests must respect the same shared HTTP 429 pause');
+});
+
+test('binary asset returns a resource 403 immediately, without rate-limit retry', async () => {
+  let calls = 0;
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'token' });
+    calls++;
+    return new Response('denied', { status: 403 });
+  } };
+  const client = new ElectronSessionClient(session, 750);
+  await client.authenticated();
+  const response = await client.openFile('/backend-api/files/download/file_denied');
+  assert.equal(response.status, 403);
+  assert.equal(calls, 1);
+});
