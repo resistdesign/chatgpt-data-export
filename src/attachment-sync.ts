@@ -199,7 +199,8 @@ export async function syncMissingAttachments(
 
         // Per-attachment durable checkpoint, not one giant transaction. A
         // crash loses at most the current file request, not prior recoveries.
-        indexed = { files, missing, names: indexed?.names };
+        const savedIndex = await archive.read<SavedAssetIndex>(indexFile(root));
+        indexed = { files, missing, names: savedIndex?.names ?? indexed?.names };
         await archive.json(indexFile(root), indexed);
         if (first.kind === 'conversation' && marker) {
           await archive.json(`${root}/complete.json`, {
