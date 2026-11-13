@@ -200,29 +200,52 @@ export class ElectronSessionClient implements ChatGptApi {
     const url = validateApiPath(path);
     if (!this.token) this.token = await this.sessionToken();
     if (!this.token) throw new SessionExpiredError(path);
-    let response: Response | undefined;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let refreshes = 0;
+    for (let attempt = 0; attempt <= 6; attempt++) {
       await this.pace();
       const headers: Record<string, string> = {
-        accept: '*/*',
-        authorization: `Bearer ${this.token}`,
+        accept: '*/*', authorization: `Bearer ${this.token}`,
       };
       if (workspaceId) headers['ChatGPT-Account-Id'] = workspaceId;
-      response = await this.session.fetch(url, {
-        method: 'GET',
-        headers,
-        credentials: 'include',
-        cache: 'no-store',
-        redirect: 'manual',
-        signal: AbortSignal.timeout(timeout),
-      });
-      if (response.status !== 401) break;
-      // A 401 on a binary file route might be a restricted file, not an
-      // expired login. Refresh once and then verify the account scope.
-      const oldToken: string | undefined = this.token;
+      let response: Response;
+      try {
+        response = await this.session.fetch(url, {
+          method: 'GET', headers, credentials: 'include', cache: 'no-store',
+          redirect: 'manual', signal: AbortSignal.timeout(timeout),
+        });
+      } catch (error) {
+        if (this.halted) throw new ExportCancelledError();
+        if (attempt === 6) throw new ApiError(503, 'asset-binary', 'Asset network retries exhausted');
+        const delay = this.backoff(503, attempt, null);
+        this.cooldownUntil = Math.max(this.cooldownUntil, this.timing.now() + delay);
+        this.progress?.info(`Asset network request interrupted; retry ${attempt + 1}/6 after ${Math.ceil(delay / 1000)}s.`);
+        continue;
+      }
+      if ([408, 429].includes(response.status) || response.status >= 500) {
+        const status = response.status;
+        const retryAfter = response.headers.get('Retry-After');
+        await response.body?.cancel().catch(() => undefined);
+        if (attempt === 6) {
+          if (status === 429) throw new RateLimitExhausted('asset-binary');
+          throw new ApiError(status, 'asset-binary', `Asset HTTP ${status} after 7 attempts`);
+        }
+        const delay = this.backoff(status, attempt, retryAfter);
+        this.cooldownUntil = Math.max(this.cooldownUntil, this.timing.now() + delay);
+        this.progress?.info(status === 429
+          ? `ChatGPT binary HTTP 429: shared pause ${Math.ceil(delay / 1000)}s; retry ${attempt + 1}/6.`
+          : `ChatGPT binary HTTP ${status}; retry ${attempt + 1}/6 after ${Math.ceil(delay / 1000)}s.`);
+        continue;
+      }
+      if (response.status !== 401) {
+        if (response.ok) this.recoveredSuccess();
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      // Resource-level HTTP 401 does not imply the entire session has expired.
+      const oldToken: string = this.token;
       this.token = await this.sessionToken();
       if (!this.token) throw new SessionExpiredError(path);
-      if (this.token !== oldToken && attempt === 0) continue;
+      if (this.token !== oldToken && refreshes++ === 0) continue;
       const account = await this.request(
         validateApiPath('/backend-api/accounts/check/v4-2023-04-27'), null, this.token,
       );
@@ -234,8 +257,7 @@ export class ElectronSessionClient implements ChatGptApi {
       if (account.status === 401 || account.status === 403) throw new SessionExpiredError(path);
       throw new SessionCheckError(account.status);
     }
-    if (!response) throw new Error('Binary asset request failed before a response was received');
-    return response;
+    throw new Error('Unreachable asset retry state');
   }
 
   private async request(url: string, workspaceId: string | null, token: string): Promise<FetchReply> {
