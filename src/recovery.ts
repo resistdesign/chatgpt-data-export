@@ -20,6 +20,10 @@ export interface ArchiveOverview {
   recordedPartial: number;
   notYetCaptured: number;
   missingFiles: number;
+  /** Download intentionally skipped in the history-first pass. */
+  deferredFiles: number;
+  /** Prior retrievals denied access; leave them for manual retry. */
+  unavailableFiles: number;
   projects: number;
   projectFilesMissing: number;
   projectsWithMissing: number;
@@ -35,16 +39,17 @@ export interface ArchiveOverview {
   verified: false;
 }
 
-interface Target {
+export interface MissingAssetTarget {
   workspaceKey: string;
   kind: 'conversation' | 'project';
   ownerId: string;
   fileId: string;
+  reason: string;
 }
 
 interface ScanResult {
   overview: ArchiveOverview | null;
-  targets: Target[];
+  targets: MissingAssetTarget[];
 }
 
 export interface RecoveryResult {
@@ -77,6 +82,18 @@ async function directories(archive: Archive, parent: string): Promise<string[]> 
  * Read only local checkpoint metadata, not conversations and not ChatGPT APIs.
  * Avoid hashing every file here: the separate Verify feature owns integrity.
  */
+/**
+ * Denials are not necessarily permanent. The normal full sync avoids
+ * repeatedly probing them; the existing manual recovery action can retry.
+ */
+export function missingAssetQueueStatus(reason: string): 'deferred' | 'unavailable' {
+  if (/download deferred|assets intentionally disabled/i.test(reason)) return 'deferred';
+  if (/permission_error|HTTP (?:401|403|404)\b|no accessible download after|absent from saved source metadata|source metadata unavailable/i.test(reason)) {
+    return 'unavailable';
+  }
+  return 'deferred';
+}
+
 function categorize(reason: string): keyof ArchiveOverview['blockers'] {
   if (/permission_error/i.test(reason)) return 'permission_error';
   if (/HTTP 401/i.test(reason)) return 'HTTP 401';
@@ -129,7 +146,8 @@ async function scan(output: string): Promise<ScanResult> {
   const report = await archive.read<{ at?: string; status?: string }>('report.json');
   const overview: ArchiveOverview = {
     workspaces: 0, discovered: 0, recordedComplete: 0, recordedPartial: 0,
-    notYetCaptured: 0, missingFiles: 0, projects: 0, projectFilesMissing: 0,
+    notYetCaptured: 0, missingFiles: 0, deferredFiles: 0, unavailableFiles: 0,
+    projects: 0, projectFilesMissing: 0,
     projectsWithMissing: 0, lastRunAt: report?.at ?? null,
     lastRunStatus: report?.status ?? null, verified: false,
     lastSyncAt: null, lastSyncNew: 0, lastSyncUpdated: 0,
@@ -137,7 +155,7 @@ async function scan(output: string): Promise<ScanResult> {
     routeFailures: [],
   };
   const routeCounts = new Map<string, RouteFailure>();
-  const targets: Target[] = [];
+  const targets: MissingAssetTarget[] = [];
   let hasInventory = false;
   for (const workspaceKey of workspaceKeys) {
     const base = `workspaces/${workspaceKey}`;
@@ -162,8 +180,11 @@ async function scan(output: string): Promise<ScanResult> {
       overview.missingFiles += marker.missing.length;
       for (const entry of marker.missing) {
         overview.blockers[categorize(entry.reason)]++;
+        overview[missingAssetQueueStatus(entry.reason) === 'deferred' ? 'deferredFiles' : 'unavailableFiles']++;
         addAttemptCounts(entry, 'conversation', routeCounts);
-        if (safe(entry.id)) targets.push({ workspaceKey, kind: 'conversation', ownerId: id, fileId: entry.id });
+        if (safe(entry.id)) targets.push({
+          workspaceKey, kind: 'conversation', ownerId: id, fileId: entry.id, reason: entry.reason,
+        });
       }
     }
     overview.projects += Array.isArray(inventory.projects) ? inventory.projects.length : 0;
@@ -177,9 +198,13 @@ async function scan(output: string): Promise<ScanResult> {
       overview.projectFilesMissing += missing.length;
       overview.missingFiles += missing.length;
       for (const entry of missing) {
-        overview.blockers[categorize(String((entry as { reason?: unknown }).reason ?? ''))]++;
+        const reason = String((entry as { reason?: unknown }).reason ?? '');
+        overview.blockers[categorize(reason)]++;
+        overview[missingAssetQueueStatus(reason) === 'deferred' ? 'deferredFiles' : 'unavailableFiles']++;
         addAttemptCounts(entry as { id: string; attempts?: unknown }, 'project', routeCounts);
-        if (safe(entry.id)) targets.push({ workspaceKey, kind: 'project', ownerId: project.id, fileId: entry.id });
+        if (safe(entry.id)) targets.push({
+          workspaceKey, kind: 'project', ownerId: project.id, fileId: entry.id, reason,
+        });
       }
     }
   }
@@ -192,6 +217,11 @@ async function scan(output: string): Promise<ScanResult> {
 
 export async function inspectArchive(output: string): Promise<ArchiveOverview | null> {
   return (await scan(output)).overview;
+}
+
+/** Read checkpoint metadata only: no network and no file-byte downloads. */
+export async function scanMissingAssetTargets(output: string): Promise<ScanResult> {
+  return scan(output);
 }
 
 /**
@@ -265,6 +295,7 @@ export async function archiveDiagnosticText(output: string): Promise<string> {
     `Workspaces: ${overview.workspaces}`,
     `Conversations: ${overview.recordedComplete} saved, ${overview.recordedPartial} partial, ${overview.notYetCaptured} not captured`,
     `Missing file references: ${overview.missingFiles}; Project files: ${overview.projectFilesMissing}`,
+    `Deferred for automated sync: ${overview.deferredFiles}; previously unavailable: ${overview.unavailableFiles}`,
     ...(latestLine ? [latestLine] : []),
     'Missing-record categories:', ...(categories.length ? categories : ['  none']),
     'Failed route attempts (not unique files):', ...(routes.length ? routes : ['  no route attempts recorded']),
@@ -308,7 +339,7 @@ export async function recoverMissingAssets(
   await archive.json('recovery-cursor.json', {
     schema: 1, next: (start + selected.length) % candidates.length, at: new Date().toISOString(),
   });
-  const groups = new Map<string, { workspace: Workspace; kind: Target['kind']; ownerId: string; ids: Set<string> }>();
+  const groups = new Map<string, { workspace: Workspace; kind: MissingAssetTarget['kind']; ownerId: string; ids: Set<string> }>();
   for (const target of selected) {
     const groupKey = `${target.workspaceKey}/${target.kind}/${target.ownerId}`;
     let group = groups.get(groupKey);
