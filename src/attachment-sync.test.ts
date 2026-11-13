@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Archive, workspaceKey, type CompletionMarker } from './archive.js';
 import { syncMissingAttachments } from './attachment-sync.js';
-import { RateLimitExhausted, ExportCancelledError } from './errors.js';
+import { ApiError, RateLimitExhausted, ExportCancelledError } from './errors.js';
 import { Progress, type ProgressSnapshot } from './progress.js';
 import { inspectArchive } from './recovery.js';
 import type { ChatGptApi } from './api-types.js';
@@ -278,5 +278,54 @@ test('Stop safely keeps all earlier per-file checkpoints and does not start anot
     assert.equal(requests.length, 1, 'cancellation blocks the second file request');
     assert.equal((await archive.marker(key, conversation))?.missing.length, 1);
     assert.equal((await archive.read<{ status: string }>('attachment-sync-latest.json'))?.status, 'stopped');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('automatic sync pauses after 60 denied files and retains the rest as deferred', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-asset-denial-fuse-'));
+  try {
+    const archive = new Archive(dir);
+    const inventory: Inventory = {
+      schema: 1, generatedAt: '2026-11-12T00:00:00Z',
+      conversations: [{ id: conversation, title: 'Many denied files', updated: 1 }],
+      projects: [], shared: [], warnings: [],
+      scopes: { main: 'complete', archived: 'complete', projects: 'complete', shared: 'complete' },
+    };
+    await archive.json(`${root}/inventory.json`, inventory);
+    const names = Array.from({ length: 61 }, (_, index) => `file_denied_${index}`);
+    const raw = await archive.json(`${root}/conversations/${conversation}/raw.json`, {
+      id: conversation, messages: [{ content: { parts: names.map(file_id => ({ file_id })) } }],
+    });
+    const missing = names.map(id => ({ id, reason: 'Download deferred to later file recovery' }));
+    await archive.json(`${root}/conversations/${conversation}/complete.json`, {
+      schema: 1, id: conversation, updated: 1, raw, files: [], missing,
+      completedAt: '2026-11-12T00:00:00Z',
+    } satisfies CompletionMarker);
+    let fileRequests = 0;
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      get: async path => {
+        if (path.includes('accounts/check')) return accountResponse;
+        fileRequests++;
+        throw new ApiError(403, path, 'HTTP 403');
+      },
+      openFile: async () => {
+        fileRequests++;
+        return new Response('not found', { status: 404 });
+      },
+    };
+    const result = await syncMissingAttachments(api, dir, new Progress(undefined, false), () => false);
+    assert.equal(result.status, 'stopped', 'denial fuse pauses automatic retry storms');
+    assert.equal(result.eligible, 61);
+    assert.equal(result.processed, 60);
+    assert.equal(result.unavailable, 60);
+    assert.equal(result.remaining, 61);
+    assert.equal(fileRequests, 120, 'each denied file gets no more than two route trials');
+    assert.equal((await inspectArchive(dir))?.deferredFiles, 1);
+    assert.equal((await inspectArchive(dir))?.unavailableFiles, 60);
+    const resumed = await syncMissingAttachments(api, dir, new Progress(undefined, false), () => false);
+    assert.equal(resumed.eligible, 1, 'only the untouched deferred reference is retried');
+    assert.equal(resumed.processed, 1);
+    assert.equal(resumed.remaining, 61);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
