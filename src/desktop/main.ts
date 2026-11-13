@@ -285,15 +285,18 @@ async function runAttachmentSync(): Promise<void> {
     if (snapshot.message) event(snapshot.message);
     else broadcast();
   }, false);
-  const client = new ElectronSessionClient(session.fromPartition(PARTITION), 750, progress);
+  // A lower request rate is intentionally used for long bulk attachment syncs.
+  const client = new ElectronSessionClient(session.fromPartition(PARTITION), 2500, progress);
   const job = { api: client, cancelled: false };
   current = job;
   progress.start();
   try {
     if (!await client.authenticated()) throw new Error('Sign in to ChatGPT before syncing attachments.');
     const result = await syncMissingAttachments(client, state.output, progress, () => job.cancelled);
-    state.status = 'Attachment sync pass finished';
-    state.result = `${result.recovered} attachments recovered (${result.alreadyVerified} already on disk); ${result.unavailable} newly unavailable; ${result.previouslyUnavailable} previously denied and skipped; ${result.unlisted} unmatched; ${result.remaining} missing references remain.`;
+    state.status = result.status === 'stopped'
+      ? 'Attachment sync paused after repeated denials' : 'Attachment sync pass finished';
+    state.result = `${result.recovered} attachments recovered (${result.alreadyVerified} already on disk); ${result.unavailable} newly unavailable; ${result.previouslyUnavailable} previously denied and skipped; ${result.unlisted} unmatched; ${result.remaining} missing references remain.` +
+      (result.status === 'stopped' ? ' Paused after 60 consecutive unavailable files to avoid unnecessary traffic. Existing checkpoints are preserved.' : '');
     event(state.result);
   } catch (error) {
     if (job.cancelled || error instanceof ExportCancelledError) {
