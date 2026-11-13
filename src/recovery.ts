@@ -88,7 +88,7 @@ async function directories(archive: Archive, parent: string): Promise<string[]> 
  */
 export function missingAssetQueueStatus(reason: string): 'deferred' | 'unavailable' {
   if (/download deferred|assets intentionally disabled/i.test(reason)) return 'deferred';
-  if (/permission_error|HTTP (?:401|403|404)\b|no accessible download after|absent from saved source metadata|source metadata unavailable/i.test(reason)) {
+  if (/permission_error|HTTP (?:401|403|404)\b|no accessible download after|automatic route budget exhausted|absent from saved source metadata|source metadata unavailable/i.test(reason)) {
     return 'unavailable';
   }
   return 'deferred';
