@@ -214,7 +214,12 @@ export async function syncMissingAttachments(
             manifest = { files: [info] };
           }
           const metadata = (manifest?.files ?? []).filter(file => !file.path.startsWith(`${root}/assets/`));
-          await archive.json(manifestFile, { files: [...metadata, ...files] });
+          // A previous interrupted pass may have registered a verified asset
+          // in the Project manifest before its index changed. Never drop it.
+          const previouslyListed = (manifest?.files ?? []).filter(file => file.path.startsWith(`${root}/assets/`));
+          await archive.json(manifestFile, {
+            files: [...metadata, ...distinctFiles([...previouslyListed, ...files])],
+          });
         }
         await done(workspace, verified ? 'verified' : 'attempted');
       }
