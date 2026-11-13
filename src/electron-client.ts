@@ -54,6 +54,10 @@ export class ElectronSessionClient implements ChatGptApi {
   private successesSince429 = 0;
   private halted = false;
   private pacing = Promise.resolve();
+  // Cache only a recently confirmed healthy token to avoid an extra account
+  // request for every resource-level 401 in a long historical file archive.
+  private healthyToken: string | undefined;
+  private healthyUntil = 0;
 
   constructor(
     private readonly session: AuthenticatedSession,
@@ -91,6 +95,31 @@ export class ElectronSessionClient implements ChatGptApi {
   }
 
   cancel(): void { this.halted = true; }
+
+  /**
+   * Classify a resource-level HTTP 401 without repeatedly requesting account
+   * health for every inaccessible file. This is a short-lived, per-token
+   * cache: a changed token or expired window forces a fresh check.
+   */
+  private async deniedOrExpired(path: string): Promise<never> {
+    if (!this.token) throw new SessionExpiredError(path);
+    if (this.healthyToken === this.token && this.timing.now() < this.healthyUntil) {
+      throw new ResourceDeniedError(path);
+    }
+    await this.pace();
+    const account = await this.request(
+      validateApiPath('/backend-api/accounts/check/v4-2023-04-27'), null, this.token,
+    );
+    const accounts = (account.body as { accounts?: unknown } | null)?.accounts;
+    if (account.status === 200 && accounts && typeof accounts === 'object' &&
+      !Array.isArray(accounts) && Object.keys(accounts).length > 0) {
+      this.healthyToken = this.token;
+      this.healthyUntil = this.timing.now() + 20_000;
+      throw new ResourceDeniedError(path);
+    }
+    if (account.status === 401 || account.status === 403) throw new SessionExpiredError(path);
+    throw new SessionCheckError(account.status);
+  }
 
   /**
    * Admission is serialized, but the deadline must be read again after EVERY
@@ -165,16 +194,7 @@ export class ElectronSessionClient implements ChatGptApi {
           this.progress?.info('ChatGPT refreshed the session token; retrying once.');
           continue;
         }
-        const account = await this.request(
-          validateApiPath('/backend-api/accounts/check/v4-2023-04-27'), null, this.token,
-        );
-        const accounts = (account.body as { accounts?: unknown } | null)?.accounts;
-        if (account.status === 200 && accounts && typeof accounts === 'object' &&
-          !Array.isArray(accounts) && Object.keys(accounts).length > 0) {
-          throw new ResourceDeniedError(path);
-        }
-        if (account.status === 401 || account.status === 403) throw new SessionExpiredError(path);
-        throw new SessionCheckError(account.status);
+        await this.deniedOrExpired(path);
       }
       const retryable = [408, 429].includes(response.status) || response.status >= 500;
       if (!retryable) throw new ApiError(response.status, path, `ChatGPT returned HTTP ${response.status}`);
@@ -246,16 +266,7 @@ export class ElectronSessionClient implements ChatGptApi {
       this.token = await this.sessionToken();
       if (!this.token) throw new SessionExpiredError(path);
       if (this.token !== oldToken && refreshes++ === 0) continue;
-      const account = await this.request(
-        validateApiPath('/backend-api/accounts/check/v4-2023-04-27'), null, this.token,
-      );
-      const accounts = (account.body as { accounts?: unknown } | null)?.accounts;
-      if (account.status === 200 && accounts && typeof accounts === 'object' &&
-        !Array.isArray(accounts) && Object.keys(accounts).length > 0) {
-        throw new ResourceDeniedError(path);
-      }
-      if (account.status === 401 || account.status === 403) throw new SessionExpiredError(path);
-      throw new SessionCheckError(account.status);
+      await this.deniedOrExpired(path);
     }
     throw new Error('Unreachable asset retry state');
   }

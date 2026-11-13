@@ -281,7 +281,7 @@ test('Stop safely keeps all earlier per-file checkpoints and does not start anot
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('automatic sync pauses after 60 denied files and retains the rest as deferred', async () => {
+test('automatic sync continues after 60 denied files to reach later recoverable assets', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cde-asset-denial-fuse-'));
   try {
     const archive = new Archive(dir);
@@ -307,25 +307,35 @@ test('automatic sync pauses after 60 denied files and retains the rest as deferr
       get: async path => {
         if (path.includes('accounts/check')) return accountResponse;
         fileRequests++;
+        if (path.includes('file_denied_60')) {
+          return { status: 'success', download_url: 'https://chatgpt.com/backend-api/files/file_denied_60/download' };
+        }
         throw new ApiError(403, path, 'HTTP 403');
       },
-      openFile: async () => {
+      openFile: async path => {
         fileRequests++;
-        return new Response('not found', { status: 404 });
+        return path.includes('file_denied_60')
+          ? binary('recovered after sixty failed files')
+          : new Response('not found', { status: 404 });
       },
     };
     const result = await syncMissingAttachments(api, dir, new Progress(undefined, false), () => false);
-    assert.equal(result.status, 'stopped', 'denial fuse pauses automatic retry storms');
+    assert.equal(result.status, 'finished', 'unavailable streaks do not terminate the full pass');
     assert.equal(result.eligible, 61);
-    assert.equal(result.processed, 60);
+    assert.equal(result.processed, 61, 'all 61 queued references are inspected');
     assert.equal(result.unavailable, 60);
-    assert.equal(result.remaining, 61);
-    assert.equal(fileRequests, 120, 'each denied file gets no more than two route trials');
-    assert.equal((await inspectArchive(dir))?.deferredFiles, 1);
+    assert.equal(result.recovered, 1, 'later accessible asset can still be recovered');
+    assert.equal(result.remaining, 60);
+    assert.ok(fileRequests >= 121 && fileRequests <= 122,
+      'each denied file has two route trials and later successful file has at most two');
+    assert.equal((await inspectArchive(dir))?.deferredFiles, 0);
     assert.equal((await inspectArchive(dir))?.unavailableFiles, 60);
+    const marker = await archive.marker(key, conversation);
+    assert.equal(marker?.files.length, 1);
+    assert.equal(await readFile(archive.path(marker!.files[0]!.path), 'utf8'),
+      'recovered after sixty failed files');
     const resumed = await syncMissingAttachments(api, dir, new Progress(undefined, false), () => false);
-    assert.equal(resumed.eligible, 1, 'only the untouched deferred reference is retried');
-    assert.equal(resumed.processed, 1);
-    assert.equal(resumed.remaining, 61);
+    assert.equal(resumed.eligible, 0, 'only truly unattempted/deferred assets are automatically queued');
+    assert.equal(resumed.remaining, 60);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

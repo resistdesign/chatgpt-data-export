@@ -308,3 +308,31 @@ test('binary asset returns a resource 403 immediately, without rate-limit retry'
   assert.equal(response.status, 403);
   assert.equal(calls, 1);
 });
+
+test('repeat file-level 401 responses reuse a briefly confirmed healthy session', async () => {
+  let now = 0;
+  let accountChecks = 0;
+  let deniedFiles = 0;
+  const timing: RequestTiming = {
+    now: () => now, sleep: async ms => { now += ms; }, random: () => 0,
+  };
+  const session: AuthenticatedSession = { async fetch(url) {
+    if (url.endsWith('/api/auth/session')) return json({ accessToken: 'same-valid-token' });
+    if (url.includes('/backend-api/accounts/check')) {
+      accountChecks++;
+      return json({ accounts: { personal: {} } });
+    }
+    deniedFiles++;
+    return json({ error: 'file unavailable for this session' }, 401);
+  } };
+  const client = new ElectronSessionClient(session, 250, undefined, timing);
+  await client.authenticated();
+  await assert.rejects(client.openFile('/backend-api/files/download/file_one'), error => error instanceof ResourceDeniedError);
+  await assert.rejects(client.openFile('/backend-api/files/download/file_two'), error => error instanceof ResourceDeniedError);
+  await assert.rejects(client.get('/backend-api/files/download/file_three'), error => error instanceof ResourceDeniedError);
+  assert.equal(deniedFiles, 3, 'each file is tried only once');
+  assert.equal(accountChecks, 1, 'the same healthy token is confirmed only once within twenty seconds');
+  now += 21_000;
+  await assert.rejects(client.openFile('/backend-api/files/download/file_four'), error => error instanceof ResourceDeniedError);
+  assert.equal(accountChecks, 2, 'an elapsed health-cache window forces revalidation');
+});

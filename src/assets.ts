@@ -363,6 +363,14 @@ export async function saveAssets(
           // An explicit 403/permission denial may be header-sensitive.
           // For HTTP 404, try a different route rather than duplicating the
           // same likely-missing endpoint without the header.
+          // A resource-level 401 means the authenticated account was denied.
+          // Trying legacy variants automatically after this produces repeated
+          // authorization checks without evidence the file can be accessed.
+          // The user can explicitly invoke the thorough manual 10-file pass.
+          if (error instanceof ApiError && error.status === 401) {
+            update('HTTP 401: account denied this file; skipping other automatic routes');
+            break;
+          }
           const is404 = error instanceof ApiError && error.status === 404;
           preferNoHeader = workspaceHeader && recoverableScope(error) && !is404
             ? variant.label : undefined;

@@ -92,8 +92,6 @@ export async function syncMissingAttachments(
   summary.eligible = queue.length;
   // One policy learns from all files in this pass. It never records private IDs.
   const routePolicy = new AutomaticAssetRoutePolicy();
-  const MAX_CONSECUTIVE_DENIALS = 60;
-  let consecutiveDenials = 0;
   const inventories = new Map<string, Inventory | undefined>();
   const inventoryFor = async (key: string): Promise<Inventory | undefined> => {
     if (!inventories.has(key)) {
@@ -132,7 +130,7 @@ export async function syncMissingAttachments(
   await persist();
 
   try {
-    groups: for (const targets of groupTargets(queue).values()) {
+    for (const targets of groupTargets(queue).values()) {
       if (cancelled()) throw new ExportCancelledError();
       const first = targets[0]!;
       const workspace = available.get(first.workspaceKey)!;
@@ -174,7 +172,6 @@ export async function syncMissingAttachments(
           missing = missing.filter(entry => entry.id !== target.fileId);
           summary.recovered++;
           summary.alreadyVerified++;
-          consecutiveDenials = 0;
         } else if (!sourceValid || source === undefined) {
           summary.missingSource++;
           await done(workspace, 'missing-source');
@@ -200,10 +197,8 @@ export async function syncMissingAttachments(
             summary.unlisted++;
           } else if (!missing.some(entry => entry.id === target.fileId)) {
             summary.recovered++;
-            consecutiveDenials = 0;
           } else {
             summary.unavailable++;
-            consecutiveDenials++;
           }
           summary.attempted += asset.attempted;
         }
@@ -233,13 +228,6 @@ export async function syncMissingAttachments(
           });
         }
         await done(workspace, verified ? 'verified' : 'attempted');
-        if (consecutiveDenials >= MAX_CONSECUTIVE_DENIALS) {
-          // Do not hammer thousands of evidently inaccessible historical files.
-          // All untouched records remain deferred for a later/manual recovery.
-          summary.status = 'stopped';
-          progress.info(`Automatic attachment sync paused after ${consecutiveDenials} consecutive unavailable files. Saved files remain intact; remaining deferred references are untouched.`);
-          break groups;
-        }
       }
     }
     if (summary.status === 'running') summary.status = 'finished';
