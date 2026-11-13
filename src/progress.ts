@@ -9,6 +9,18 @@ export interface CaptureProgress {
   active: number;
 }
 
+export interface AttachmentSyncProgress {
+  /** Missing references eligible for this run (previously unavailable excluded). */
+  eligible: number;
+  attempted: number;
+  recovered: number;
+  alreadyVerified: number;
+  unavailable: number;
+  unlisted: number;
+  missingSource: number;
+  previouslyUnavailable: number;
+}
+
 export interface ProgressSnapshot {
   stage: string;
   done: number;
@@ -22,6 +34,7 @@ export interface ProgressSnapshot {
   note: string;
   waiting?: string;
   capture?: CaptureProgress;
+  attachments?: AttachmentSyncProgress;
   message?: string;
 }
 
@@ -36,6 +49,7 @@ export class Progress {
   private stage = 'Starting';
   private note = '';
   private capture: CaptureProgress | undefined;
+  private attachments: AttachmentSyncProgress | undefined;
   private waitingMessage: string | undefined;
   private waitingUntil = 0;
 
@@ -43,12 +57,16 @@ export class Progress {
 
   start(): void { this.timer = setInterval(() => this.render(), 1000); this.timer.unref(); }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = undefined; this.render(true); }
-  set(stage: string, done?: number, total?: number, note?: string, capture?: CaptureProgress): void {
+  set(
+    stage: string, done?: number, total?: number, note?: string,
+    capture?: CaptureProgress, attachments?: AttachmentSyncProgress,
+  ): void {
     if (stage !== this.stage) {
       this.done = 0;
       this.total = 0;
       this.note = '';
       this.capture = undefined;
+      this.attachments = undefined;
       this.stageStarted = Date.now();
     }
     this.stage = stage;
@@ -56,6 +74,7 @@ export class Progress {
     if (total !== undefined) this.total = total;
     if (note !== undefined) this.note = note;
     if (capture !== undefined) this.capture = { ...capture };
+    if (attachments !== undefined) this.attachments = { ...attachments };
     this.render();
   }
   /** Request pacing is transient; never replace the actual progress note. */
@@ -75,7 +94,7 @@ export class Progress {
     // Project/file retry cost varies wildly. An ETA extrapolated from saved
     // checkpoints or earlier stages can be wrong by tens of minutes.
     const variableDuration = this.stage === 'Capturing' || this.stage === 'Saving Project files' ||
-      this.stage === 'Recovering missing files';
+      this.stage === 'Recovering missing files' || this.stage === 'Syncing attachments';
     const rate = stageSeconds >= 10 && this.done >= 3 ? this.done / stageSeconds : 0;
     const etaSeconds = !variableDuration && rate > 0 && this.total > 0
       ? Math.ceil(Math.max(0, this.total - this.done) / rate) : null;
@@ -85,6 +104,7 @@ export class Progress {
       stageSeconds, etaSeconds, note: this.note,
       ...(waiting ? { waiting } : {}),
       ...(this.capture ? { capture: { ...this.capture } } : {}),
+      ...(this.attachments ? { attachments: { ...this.attachments } } : {}),
       ...(message ? { message } : {}),
     };
     this.onUpdate?.(state);
