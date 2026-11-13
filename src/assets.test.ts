@@ -347,3 +347,33 @@ test('automatic bulk mode limits denied attachments to two route trials each', a
     assert.ok(routeShapes.size > 2, 'previously unsuccessful routes are deprioritized across files');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('automatic sync treats confirmed HTTP 401 as file-level denial without route probing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-bulk-denied-401-'));
+  try {
+    let networkCalls = 0;
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      openFile: async path => {
+        networkCalls++;
+        throw new ApiError(401, path, 'HTTP 401 resource denied');
+      },
+      get: async path => {
+        networkCalls++;
+        throw new Error('Bulk sync should not try additional routes after a resource-level 401: ' + path);
+      },
+    };
+    const routePolicy = new AutomaticAssetRoutePolicy();
+    for (const id of ['file_denied_first', 'file_denied_second']) {
+      const source = { message: { content: { parts: [{ file_id: id }] } } };
+      const result = await saveAssets(api, new Archive(dir), workspace,
+        `workspaces/test/conversations/${id}`, source, {
+          conversationId: id, routePolicy,
+        });
+      assert.equal(result.missing.length, 1);
+      assert.match(result.missing[0]!.reason, /Automatic route budget exhausted after 1 attempts; HTTP 401/);
+      assert.equal(result.missing[0]!.attempts?.length, 1);
+    }
+    assert.equal(networkCalls, 2, 'one denied request per file without spamming fallback scopes');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
