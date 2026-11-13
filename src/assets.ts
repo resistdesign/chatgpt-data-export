@@ -30,6 +30,57 @@ export function safeDownloadUrl(input: string): URL {
 type Attempt = { route: string; workspaceHeader: boolean; reason: string };
 type Variant = { label: string; path: string; direct: boolean };
 
+/**
+ * Bounded route exploration for the automatic bulk attachment pass.
+ * A route is identified only by its public route label and header scope:
+ * no file IDs, conversation IDs, URLs, tokens, or filenames are retained.
+ * Manual recovery deliberately does not use this policy.
+ */
+export class AutomaticAssetRoutePolicy {
+  readonly maxTrialsPerFile = 2;
+  private readonly results = new Map<string, { attempts: number; successes: number }>();
+
+  private key(family: string, label: string, workspaceHeader: boolean): string {
+    return `${family}:${label}:${workspaceHeader ? 'workspace' : 'default'}`;
+  }
+
+  observe(family: string, label: string, workspaceHeader: boolean, succeeded: boolean): void {
+    const key = this.key(family, label, workspaceHeader);
+    const previous = this.results.get(key) ?? { attempts: 0, successes: 0 };
+    this.results.set(key, {
+      attempts: previous.attempts + 1,
+      successes: previous.successes + Number(succeeded),
+    });
+  }
+
+  next(
+    family: string, variants: readonly Variant[], tried: ReadonlySet<string>,
+    preferNoHeader?: string, avoidSameRoute?: string,
+  ): { variant: Variant; workspaceHeader: boolean } | undefined {
+    const choices = variants.flatMap((variant, order) => [
+      { variant, workspaceHeader: true, order },
+      { variant, workspaceHeader: false, order },
+    ]).filter(item => !tried.has(this.key(family, item.variant.label, item.workspaceHeader)));
+    choices.sort((a, b) => {
+      const aStats = this.results.get(this.key(family, a.variant.label, a.workspaceHeader));
+      const bStats = this.results.get(this.key(family, b.variant.label, b.workspaceHeader));
+      const successfulDifference = (bStats?.successes ?? 0) - (aStats?.successes ?? 0);
+      if (successfulDifference) return successfulDifference;
+      const aPreferred = Number(a.variant.label === preferNoHeader && !a.workspaceHeader);
+      const bPreferred = Number(b.variant.label === preferNoHeader && !b.workspaceHeader);
+      if (aPreferred !== bPreferred) return bPreferred - aPreferred;
+      const aAvoided = Number(a.variant.label === avoidSameRoute);
+      const bAvoided = Number(b.variant.label === avoidSameRoute);
+      if (aAvoided !== bAvoided) return aAvoided - bAvoided;
+      const trialDifference = (aStats?.attempts ?? 0) - (bStats?.attempts ?? 0);
+      if (trialDifference) return trialDifference;
+      return a.order - b.order || Number(b.workspaceHeader) - Number(a.workspaceHeader);
+    });
+    const next = choices[0];
+    return next ? { variant: next.variant, workspaceHeader: next.workspaceHeader } : undefined;
+  }
+}
+
 function variantsFor(ref: AssetReference, opts: { conversationId?: string; projectId?: string; projectFiles?: unknown[] }): Variant[] {
   if (ref.kind === 'sandbox') {
     const base = `/backend-api/conversation/${encodeURIComponent(opts.conversationId ?? '')}`;
@@ -250,6 +301,8 @@ export async function saveAssets(
     /** Preserve prior filename metadata during partial recovery. */
     existingNames?: Array<{ id: string; name: string | null }>;
     onProgress?: (update: AssetProgress) => void;
+    /** Only bulk sync supplies this: no more than two route trials per file. */
+    routePolicy?: AutomaticAssetRoutePolicy;
   },
 ): Promise<AssetResult> {
   const refs = assetReferences(source, opts.projectFiles);
@@ -286,33 +339,65 @@ export async function saveAssets(
 
     const attempts: Attempt[] = [];
     let downloaded: SavedFile | undefined;
-    for (const variant of variantsFor(ref, opts)) {
-      if (downloaded) break;
-      update(`Trying ${variant.label} download`);
-      // A rejected workspace header does not necessarily mean the browser
-      // account lacks access; retry that route once without the header.
-      let retryWithoutHeader = false;
-      try {
-        downloaded = await downloadVariant(api, archive, output, variant, workspace.id);
-      } catch (error) {
-        if (fatal(error)) throw error;
-        attempts.push({ route: variant.label, workspaceHeader: true, reason: shortReason(error) });
-        retryWithoutHeader = recoverableScope(error);
-      }
-      if (!downloaded && retryWithoutHeader) {
-        update(`Retrying ${variant.label} without workspace header`);
+    if (opts.routePolicy) {
+      const family = ref.kind === 'sandbox' ? 'sandbox'
+        : opts.projectFiles !== undefined ? 'project'
+        : opts.projectId ? 'project-conversation' : 'conversation';
+      const variants = variantsFor(ref, opts);
+      const tried = new Set<string>();
+      let preferNoHeader: string | undefined;
+      let avoidSameRoute: string | undefined;
+      for (let trial = 0; trial < opts.routePolicy.maxTrialsPerFile && !downloaded; trial++) {
+        const choice = opts.routePolicy.next(family, variants, tried, preferNoHeader, avoidSameRoute);
+        if (!choice) break;
+        const { variant, workspaceHeader } = choice;
+        tried.add(`${family}:${variant.label}:${workspaceHeader ? 'workspace' : 'default'}`);
+        update(`${workspaceHeader ? 'Trying' : 'Trying without workspace header:'} ${variant.label} download (route ${trial + 1}/${opts.routePolicy.maxTrialsPerFile})`);
         try {
-          downloaded = await downloadVariant(api, archive, output, variant, null);
+          downloaded = await downloadVariant(api, archive, output, variant, workspaceHeader ? workspace.id : null);
+          opts.routePolicy.observe(family, variant.label, workspaceHeader, true);
         } catch (error) {
           if (fatal(error)) throw error;
-          attempts.push({ route: variant.label, workspaceHeader: false, reason: shortReason(error) });
+          attempts.push({ route: variant.label, workspaceHeader, reason: shortReason(error) });
+          opts.routePolicy.observe(family, variant.label, workspaceHeader, false);
+          // An explicit 403/permission denial may be header-sensitive.
+          // For HTTP 404, try a different route rather than duplicating the
+          // same likely-missing endpoint without the header.
+          const is404 = error instanceof ApiError && error.status === 404;
+          preferNoHeader = workspaceHeader && recoverableScope(error) && !is404
+            ? variant.label : undefined;
+          avoidSameRoute = is404 ? variant.label : undefined;
+        }
+      }
+    } else {
+      for (const variant of variantsFor(ref, opts)) {
+        if (downloaded) break;
+        update(`Trying ${variant.label} download`);
+        // A rejected workspace header does not necessarily mean the browser
+        // account lacks access; retry that route once without the header.
+        let retryWithoutHeader = false;
+        try {
+          downloaded = await downloadVariant(api, archive, output, variant, workspace.id);
+        } catch (error) {
+          if (fatal(error)) throw error;
+          attempts.push({ route: variant.label, workspaceHeader: true, reason: shortReason(error) });
+          retryWithoutHeader = recoverableScope(error);
+        }
+        if (!downloaded && retryWithoutHeader) {
+          update(`Retrying ${variant.label} without workspace header`);
+          try {
+            downloaded = await downloadVariant(api, archive, output, variant, null);
+          } catch (error) {
+            if (fatal(error)) throw error;
+            attempts.push({ route: variant.label, workspaceHeader: false, reason: shortReason(error) });
+          }
         }
       }
     }
     if (downloaded) files.push(downloaded);
     else missing.push({
       id: ref.id,
-      reason: `No accessible download after ${attempts.length} attempts; ${attempts.at(-1)?.reason ?? 'no supported route'}`,
+      reason: `${opts.routePolicy ? 'Automatic route budget exhausted' : 'No accessible download'} after ${attempts.length} attempts; ${attempts.at(-1)?.reason ?? 'no supported route'}`,
       attempts,
     });
     update(downloaded ? 'File saved' : 'File unavailable', assetIndex + 1);
