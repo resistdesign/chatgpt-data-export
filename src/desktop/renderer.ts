@@ -4,7 +4,7 @@ interface UiState {
   signedIn: boolean;
   output: string;
   running: boolean;
-  activity: 'idle' | 'exporting' | 'recovering' | 'verifying';
+  activity: 'idle' | 'exporting' | 'recovering' | 'syncing-assets' | 'verifying';
   status: string;
   error: string | null;
   progress: ProgressSnapshot | null;
@@ -12,7 +12,7 @@ interface UiState {
   events: string[];
   archive: {
     workspaces: number; discovered: number; recordedComplete: number; recordedPartial: number;
-    notYetCaptured: number; missingFiles: number; projects: number;
+    notYetCaptured: number; missingFiles: number; deferredFiles: number; unavailableFiles: number; projects: number;
     projectFilesMissing: number; projectsWithMissing: number;
     lastRunAt: string | null; lastRunStatus: string | null; verified: false;
     lastSyncAt: string | null; lastSyncNew: number; lastSyncUpdated: number;
@@ -43,6 +43,7 @@ interface AppBridge {
   chooseOutput(): Promise<string>;
   start(limit: 25 | null | 'history' | 'sync'): Promise<boolean>;
   recover(): Promise<boolean>;
+  syncAssets(): Promise<boolean>;
   copyDiagnostics(): Promise<boolean>;
   observeFile(): Promise<boolean>;
   verify(): Promise<boolean>;
@@ -80,7 +81,7 @@ function render(state: UiState): void {
       ? `${saved.recordedComplete.toLocaleString()} complete · ${saved.recordedPartial.toLocaleString()} partial · ${saved.notYetCaptured.toLocaleString()} not yet captured out of ${saved.discovered.toLocaleString()} discovered conversations`
       : 'No saved archive in this folder yet.');
   text('archive-missing', saved
-    ? `${saved.missingFiles.toLocaleString()} missing file references, including ${saved.projectFilesMissing.toLocaleString()} across ${saved.projectsWithMissing}/${saved.projects} Projects. Counts are from saved checkpoints, not hash verification.`
+    ? `${saved.missingFiles.toLocaleString()} missing file references (${saved.deferredFiles.toLocaleString()} deferred/eligible; ${saved.unavailableFiles.toLocaleString()} previously denied). Includes ${saved.projectFilesMissing.toLocaleString()} across ${saved.projectsWithMissing}/${saved.projects} Projects. Checkpoint counts, not hash verification.`
     : 'A small export will create a local inventory and resumable checkpoints.');
   text('archive-sync', saved?.lastSyncAt
     ? `Last recent sync: ${saved.lastSyncAt.slice(0, 16).replace('T', ' ')} UTC · ${saved.lastSyncNew} new · ${saved.lastSyncUpdated} updated`
@@ -111,6 +112,8 @@ function render(state: UiState): void {
     state.archiveLoading || !saved || saved.missingFiles === 0;
   (el('retry-missing') as HTMLButtonElement).disabled = state.running || !state.signedIn ||
     state.archiveLoading || !saved || saved.missingFiles === 0;
+  (el('sync-assets') as HTMLButtonElement).disabled = state.running || !state.signedIn ||
+    state.archiveLoading || !saved || saved.deferredFiles === 0;
   text('stage', state.status);
   const progress = state.progress;
   text('counter', progress?.total
@@ -123,6 +126,16 @@ function render(state: UiState): void {
     : '—');
   const counts = progress?.capture;
   el('capture-metrics').hidden = !counts;
+  const assets = progress?.attachments;
+  el('attachment-metrics').hidden = !assets;
+  if (assets) {
+    text('asset-recovered', assets.recovered.toLocaleString());
+    text('asset-attempted', assets.attempted.toLocaleString());
+    text('asset-unavailable', assets.unavailable.toLocaleString());
+    text('asset-previously-denied', assets.previouslyUnavailable.toLocaleString());
+    text('asset-unlisted', assets.unlisted.toLocaleString());
+    text('asset-source-missing', assets.missingSource.toLocaleString());
+  }
   if (counts) {
     text('capture-complete', counts.complete.toLocaleString());
     text('capture-partial', counts.partial.toLocaleString());
@@ -136,7 +149,7 @@ function render(state: UiState): void {
   el('summary').classList.toggle('error', Boolean(state.error));
   for (const id of ['sync-recent','export-history','export-all','test-25']) (el(id) as HTMLButtonElement).disabled = state.running || !state.signedIn;
   (el('stop') as HTMLButtonElement).disabled = !state.running ||
-    (state.activity !== 'exporting' && state.activity !== 'recovering');
+    (state.activity !== 'exporting' && state.activity !== 'recovering' && state.activity !== 'syncing-assets');
   for (const id of ['verify','choose-output']) (el(id) as HTMLButtonElement).disabled = state.running;
   (el('check-session') as HTMLButtonElement).disabled = state.running;
   text('activity-count', `${state.events.length} updates`);
@@ -154,6 +167,7 @@ button('sync-recent', () => app.start('sync'));
 button('export-history', () => app.start('history'));
 button('export-all', () => app.start(null));
 button('test-25', () => app.start(25));
+button('sync-assets', () => app.syncAssets());
 button('retry-missing', () => app.recover());
 button('copy-diagnostics', () => app.copyDiagnostics());
 button('observe-file', () => app.observeFile());
