@@ -149,8 +149,12 @@ export async function syncMissingAttachments(
         ? inventory?.conversations.find(chat => chat.id === first.ownerId)?.projectId
         : undefined;
       let indexed = await archive.read<SavedAssetIndex>(indexFile(root));
+      const originalManifest = first.kind === 'project'
+        ? await archive.read<{ files?: SavedFile[] }>(`${root}/manifest.json`)
+        : undefined;
       let files: SavedFile[] = distinctFiles([
         ...(marker?.files ?? []), ...(indexed?.files ?? []),
+        ...(originalManifest?.files ?? []).filter(file => file.path.startsWith(`${root}/assets/`)),
       ]);
       let missing = (first.kind === 'conversation' ? marker?.missing : indexed?.missing) ?? [];
 
