@@ -1,5 +1,5 @@
 import { Archive, safeId, type CompletionMarker, type SavedFile } from './archive.js';
-import { saveAssets } from './assets.js';
+import { AutomaticAssetRoutePolicy, saveAssets } from './assets.js';
 import { discoverWorkspaces, type Inventory, type Workspace } from './discovery.js';
 import { ExportCancelledError } from './errors.js';
 import { missingAssetQueueStatus, scanMissingAssetTargets, type MissingAssetTarget } from './recovery.js';
@@ -90,6 +90,10 @@ export async function syncMissingAttachments(
   // consume hours of retries ahead of recoverable conversation attachments.
   queue.sort((left, right) => Number(left.kind === 'project') - Number(right.kind === 'project'));
   summary.eligible = queue.length;
+  // One policy learns from all files in this pass. It never records private IDs.
+  const routePolicy = new AutomaticAssetRoutePolicy();
+  const MAX_CONSECUTIVE_DENIALS = 60;
+  let consecutiveDenials = 0;
   const inventories = new Map<string, Inventory | undefined>();
   const inventoryFor = async (key: string): Promise<Inventory | undefined> => {
     if (!inventories.has(key)) {
@@ -128,7 +132,7 @@ export async function syncMissingAttachments(
   await persist();
 
   try {
-    for (const targets of groupTargets(queue).values()) {
+    groups: for (const targets of groupTargets(queue).values()) {
       if (cancelled()) throw new ExportCancelledError();
       const first = targets[0]!;
       const workspace = available.get(first.workspaceKey)!;
@@ -170,6 +174,7 @@ export async function syncMissingAttachments(
           missing = missing.filter(entry => entry.id !== target.fileId);
           summary.recovered++;
           summary.alreadyVerified++;
+          consecutiveDenials = 0;
         } else if (!sourceValid || source === undefined) {
           summary.missingSource++;
           await done(workspace, 'missing-source');
@@ -181,7 +186,7 @@ export async function syncMissingAttachments(
               ? { projectId: first.ownerId, projectFiles: project?.files ?? [] }
               : { conversationId: first.ownerId, projectId: conversationProject }),
             existing: files, existingMissing: missing,
-            existingNames: indexed?.names, onlyIds: ids,
+            existingNames: indexed?.names, onlyIds: ids, routePolicy,
             onProgress: updateProgress => update(
               `File ${summary.processed + 1}/${summary.eligible}: ${updateProgress.method}`),
           });
@@ -195,8 +200,10 @@ export async function syncMissingAttachments(
             summary.unlisted++;
           } else if (!missing.some(entry => entry.id === target.fileId)) {
             summary.recovered++;
+            consecutiveDenials = 0;
           } else {
             summary.unavailable++;
+            consecutiveDenials++;
           }
           summary.attempted += asset.attempted;
         }
@@ -226,9 +233,16 @@ export async function syncMissingAttachments(
           });
         }
         await done(workspace, verified ? 'verified' : 'attempted');
+        if (consecutiveDenials >= MAX_CONSECUTIVE_DENIALS) {
+          // Do not hammer thousands of evidently inaccessible historical files.
+          // All untouched records remain deferred for a later/manual recovery.
+          summary.status = 'stopped';
+          progress.info(`Automatic attachment sync paused after ${consecutiveDenials} consecutive unavailable files. Saved files remain intact; remaining deferred references are untouched.`);
+          break groups;
+        }
       }
     }
-    summary.status = 'finished';
+    if (summary.status === 'running') summary.status = 'finished';
   } catch (error) {
     summary.status = cancelled() || error instanceof ExportCancelledError ? 'stopped' : 'interrupted';
     throw error;

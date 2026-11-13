@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { ApiError } from './errors.js';
 import type { ChatGptApi } from './api-types.js';
 import { Archive } from './archive.js';
-import { safeDownloadUrl, saveAssets } from './assets.js';
+import { AutomaticAssetRoutePolicy, safeDownloadUrl, saveAssets } from './assets.js';
 import type { Workspace } from './discovery.js';
 
 const workspace: Workspace = { key: 'test-key', id: 'account-1', label: 'Test', kind: 'business' };
@@ -261,5 +261,89 @@ test('conversation inside a Project uses BOTH context IDs, then simple metadata 
     const simple = new URL(paths.find(path => path.includes('/simple?'))!, 'https://chatgpt.com');
     assert.equal(simple.searchParams.get('conversation_id'), 'chat_yes');
     assert.equal(simple.searchParams.get('gizmo_id'), 'g-p-abc');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('automatic bulk mode learns a successful fallback and reuses it for subsequent files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-learn-route-'));
+  const originalFetch = globalThis.fetch;
+  try {
+    const calls: Array<{ path: string; scope: string | null | undefined }> = [];
+    globalThis.fetch = async (_url, init) => {
+      assert.equal(init?.credentials, 'omit');
+      assert.equal(new Headers(init?.headers).has('authorization'), false);
+      return binary('recovered bytes');
+    };
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      openFile: async (path, scope) => {
+        calls.push({ path, scope });
+        return new Response('not found', { status: 404 });
+      },
+      get: async (path, scope) => {
+        calls.push({ path, scope });
+        return { status: 'success', download_url: 'https://files.oaiusercontent.com/valid/signed-file' };
+      },
+    };
+    const routePolicy = new AutomaticAssetRoutePolicy();
+    for (const id of ['file_first', 'file_second']) {
+      const before = calls.length;
+      const data = { message: { content: { parts: [{ file_id: id }] } } };
+      const result = await saveAssets(api, new Archive(dir), workspace,
+        `workspaces/test/conversations/${id}`, data, {
+          conversationId: id, routePolicy,
+        });
+      assert.equal(result.missing.length, 0);
+      assert.equal(result.files.length, 1);
+      const fileCalls = calls.slice(before);
+      if (id === 'file_first') {
+        assert.equal(fileCalls.length, 2, '404 falls back to another route, not the same route without a header');
+        assert.ok(fileCalls[0]?.path.includes('check_context_scopes_for_conversation_id'));
+        assert.ok(fileCalls[1]?.path.includes('inline=false'));
+      } else {
+        assert.equal(fileCalls.length, 1, 'learned working route gets the first attempt');
+        assert.ok(fileCalls[0]?.path.includes('inline=false'));
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('automatic bulk mode limits denied attachments to two route trials each', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cde-budget-route-'));
+  try {
+    const calls: Array<{ path: string; scope: string | null | undefined }> = [];
+    const api: ChatGptApi = {
+      cancel: () => undefined,
+      openFile: async (path, scope) => {
+        calls.push({ path, scope });
+        return new Response('not found', { status: 404 });
+      },
+      get: async (path, scope) => {
+        calls.push({ path, scope });
+        throw new ApiError(403, path, 'HTTP 403');
+      },
+    };
+    const routePolicy = new AutomaticAssetRoutePolicy();
+    for (let index = 0; index < 8; index++) {
+      const id = `file_missing_${index}`;
+      const before = calls.length;
+      const source = { message: { content: { parts: [{ file_id: id }] } } };
+      const result = await saveAssets(api, new Archive(dir), workspace,
+        `workspaces/test/conversations/chat_${index}`, source, {
+          conversationId: `chat_${index}`, routePolicy,
+        });
+      assert.equal(calls.length - before, 2, 'no more than two failed route requests per file');
+      assert.equal(result.missing.length, 1);
+      assert.match(result.missing[0]!.reason, /Automatic route budget exhausted after 2 attempts/);
+      assert.equal(result.missing[0]!.attempts?.length, 2);
+    }
+    const routeShapes = new Set(calls.map(call => {
+      const path = call.path.replace(/file_missing_\d+/g, '{file}').replace(/chat_\d+/g, '{chat}');
+      return `${path}|${call.scope === null ? 'default' : 'workspace'}`;
+    }));
+    assert.ok(routeShapes.size > 2, 'previously unsuccessful routes are deprioritized across files');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
